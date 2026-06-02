@@ -10,6 +10,7 @@ API_URL="https://net.web.minecraft-services.net/api/v1.0/download/links"
 VERSION_FILE="$DEST/.installed-version"
 URL_FILE="$DEST/.installed-url"
 STDIN_FIFO="$DEST/.server.stdin"
+NOTICE_SECONDS="${UPDATE_NOTICE_SECONDS:-300}"
 
 usage() {
     cat <<EOF
@@ -27,6 +28,10 @@ Commands:
 Environment:
   BEDROCK_DIR      Install directory. Default: $BASE_DIR/bedrock-server
   CHECK_INTERVAL   systemd timer interval. Default: 6h
+  UPDATE_NOTICE_SECONDS
+                   Seconds to warn players before update restart. Default: 300
+  DISCORD_WEBHOOK_URL
+                   Optional Discord webhook URL for update notifications.
 EOF
 }
 
@@ -53,6 +58,63 @@ systemctl_run() {
         systemctl "$@"
     else
         sudo systemctl "$@"
+    fi
+}
+
+send_server_command() {
+    local command="$1"
+    if [[ -p "$STDIN_FIFO" ]]; then
+        timeout 5s bash -c 'printf "%s\n" "$1" > "$2"' _ "$command" "$STDIN_FIFO" || true
+    fi
+}
+
+notify_discord() {
+    local message="$1"
+    if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+        return 0
+    fi
+
+    local payload
+    payload="$(jq -n --arg content "$message" '{content: $content}')"
+    curl -fsS \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "$DISCORD_WEBHOOK_URL" \
+        >/dev/null \
+        || echo "Discord notification failed." >&2
+}
+
+warn_before_update() {
+    local old_version="$1"
+    local new_version="$2"
+    local seconds="$NOTICE_SECONDS"
+
+    case "$seconds" in
+        ''|*[!0-9]*)
+            echo "UPDATE_NOTICE_SECONDS must be a non-negative integer: $seconds" >&2
+            exit 1
+            ;;
+    esac
+
+    if [[ "$seconds" -le 0 ]]; then
+        return 0
+    fi
+
+    notify_discord "Bedrock server update found: ${old_version:-none} -> $new_version. Restarting in ${seconds}s."
+    send_server_command "say Server update found. Restarting in ${seconds} seconds."
+
+    if [[ "$seconds" -gt 120 ]]; then
+        sleep "$((seconds - 60))"
+        send_server_command "say Server update starts in 1 minute."
+        sleep 50
+        send_server_command "say Server update starts in 10 seconds."
+        sleep 10
+    elif [[ "$seconds" -gt 10 ]]; then
+        sleep "$((seconds - 10))"
+        send_server_command "say Server update starts in 10 seconds."
+        sleep 10
+    else
+        sleep "$seconds"
     fi
 }
 
@@ -158,7 +220,7 @@ stop_server() {
         exit 1
     fi
 
-    timeout 5s bash -c 'printf "stop\n" > "$1"' _ "$STDIN_FIFO"
+    send_server_command "stop"
 }
 
 auto_update() {
@@ -181,9 +243,11 @@ auto_update() {
 
     if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME.service"; then
         service_was_active=1
+        warn_before_update "$installed" "$version"
         systemctl_run stop "$APP_NAME.service"
     fi
 
+    notify_discord "Bedrock server update is starting: ${installed:-none} -> $version."
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
@@ -194,6 +258,9 @@ auto_update() {
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
+        notify_discord "Bedrock server update completed: $version. Server restarted."
+    else
+        notify_discord "Bedrock server update completed: $version."
     fi
 }
 
@@ -241,10 +308,12 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+EnvironmentFile=-/etc/default/$APP_NAME
 Environment=SERVICE_USER=$run_user
 Environment=SERVICE_GROUP=$run_group
 Nice=10
 IOSchedulingClass=idle
+TimeoutStartSec=30min
 ExecStart=$SCRIPT_PATH auto-update
 EOF
 

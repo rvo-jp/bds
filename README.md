@@ -48,14 +48,41 @@ sudo ./bds.sh install-systemd
 
 - `bds.service` が Bedrock Dedicated Server を 24 時間稼働
 - `bds-update.timer` が 6 時間ごとに更新確認
-- 新版がある場合はサーバーを停止、更新、再起動
+- 新版がある場合はゲーム内へ警告し、5 分待ってからサーバーを停止、更新、再起動
 - 更新処理は低 CPU/I/O 優先度で実行され、サーバー本体への影響を抑制
+- 更新 service は警告待機とダウンロード時間を見込んで最大 30 分まで実行可能
 
 更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。Minecraft 側へ性能を寄せるため、通常は 6 時間以上を推奨します。
 
 ```bash
 sudo CHECK_INTERVAL=12h ./bds.sh install-systemd
 ```
+
+更新前の待機時間を変える場合は `/etc/default/bds` に設定します。
+
+```bash
+sudo nano /etc/default/bds
+```
+
+```text
+UPDATE_NOTICE_SECONDS=300
+```
+
+設定変更後は systemd を読み直します。
+
+```bash
+sudo systemctl daemon-reload
+```
+
+## Discord 通知
+
+Discord Webhook URL を設定すると、アップデート開始前と完了時に通知します。
+
+```text
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
+
+Webhook URL は秘匿情報なので、README や Git には入れず `/etc/default/bds` にだけ保存してください。
 
 ## 操作
 
@@ -84,6 +111,19 @@ sudo systemctl stop bds.service
 sudo systemctl start bds.service
 sudo systemctl restart bds.service
 ```
+
+## メンテナンス方針
+
+定期メンテナンスはした方が安全です。ただし頻繁な再起動より、ワールド保護を優先します。
+
+推奨は次の運用です。
+
+- ワールドバックアップ: 1 日 1 回、プレイヤーが少ない時間帯
+- サーバー再起動: 週 1 回程度、またはメモリ使用量や挙動が不安定なとき
+- Bedrock 更新: このスクリプトで検知し、ゲーム内警告後に実行
+- Discord 通知: 複数人で遊ぶサーバーなら設定推奨
+
+メンテナンスでサーバーを閉じる場合も、Discord とゲーム内 `say` の両方で事前通知するのが快適です。
 
 定期更新 timer を確認します。
 
