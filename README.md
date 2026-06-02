@@ -116,6 +116,12 @@ sudo ./bds.sh auto-update
 sudo ./bds.sh backup
 ```
 
+バックアップから復元します。
+
+```bash
+sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
+```
+
 サーバーを停止、起動、再起動します。
 
 ```bash
@@ -141,11 +147,14 @@ sudo systemctl restart bds.service
 
 バックアップはデフォルトで毎日 `04:30` に実行され、プロジェクト配下の `backups/` に保存されます。サーバーが起動している場合は `save hold` でワールド保存を一時固定し、`worlds/` を `tar.gz` にまとめたあと `save resume` で通常保存に戻します。
 
+バックアップ前には空き容量を確認し、作成後には `tar.gz` を読み取れるか検証します。空き容量不足や検証失敗が起きた場合は成功扱いにせず、Discord Webhook URL が設定されていれば通知します。
+
 デフォルト設定は次の通りです。
 
 ```text
 BACKUP_RETENTION_DAYS=14
 BACKUP_HOLD_SECONDS=10
+BACKUP_MIN_FREE_MB=1024
 ```
 
 `/etc/default/bds` に設定すると、systemd のバックアップ service に反映されます。`BACKUP_DIR` を指定する場合は絶対パスを使ってください。
@@ -158,6 +167,7 @@ sudo nano /etc/default/bds
 BACKUP_DIR=/home/ubuntu/bds/backups
 BACKUP_RETENTION_DAYS=14
 BACKUP_HOLD_SECONDS=10
+BACKUP_MIN_FREE_MB=1024
 ```
 
 バックアップ実行時刻を変える場合は、systemd timer を作り直します。
@@ -172,11 +182,10 @@ sudo BACKUP_ON_CALENDAR="*-*-* 03:30:00" ./bds.sh install-systemd
 systemctl list-timers bds-backup.timer
 ```
 
-復元する場合は、サーバーを停止してから対象バックアップを展開し、`bedrock-server/worlds/` を戻してください。
+復元する場合は `restore` を使います。復元前にバックアップを検証し、`bds.service` が起動中なら停止します。既存の `worlds/` は削除せず、`worlds.pre-restore-YYYYMMDD-HHMMSS/` に退避します。復元前にサーバーが起動していた場合は、復元後に再起動します。
 
 ```bash
-sudo systemctl stop bds.service
-tar -xzf backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz -C bedrock-server
+sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 ```
 
 重要なサーバーでは、`backups/` を別ディスクや外部ストレージにもコピーすることを推奨します。

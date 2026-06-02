@@ -18,6 +18,7 @@ BACKUP_DIR="${BACKUP_DIR:-$BASE_DIR/backups}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
+BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 
 usage() {
     cat <<EOF
@@ -29,6 +30,8 @@ Commands:
   stop             Send "stop" to a running server started by this script.
   auto-update      Check for updates. If updated, restart the systemd service.
   backup           Create a worlds backup without stopping the server.
+  restore <archive>
+                   Restore worlds from a backup archive.
   install-systemd  Install systemd service and timer for 24/7 operation.
   uninstall-systemd
                    Remove installed systemd service and timer.
@@ -45,6 +48,8 @@ Environment:
                    systemd backup schedule. Default: *-*-* 04:30:00
   BACKUP_HOLD_SECONDS
                    Seconds to wait after save hold. Default: 10
+  BACKUP_MIN_FREE_MB
+                   Minimum free space before backup. Default: 1024
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -72,6 +77,10 @@ require_backup_deps() {
     need_cmd tar
     need_cmd find
     need_cmd date
+    need_cmd df
+    need_cmd du
+    need_cmd awk
+    need_cmd grep
     need_cmd curl
     need_cmd jq
 }
@@ -280,6 +289,60 @@ server_accepts_commands() {
     [[ -p "$STDIN_FIFO" ]]
 }
 
+backup_size_mb() {
+    local path="$1"
+    local size_kb
+    size_kb="$(du -sk "$path" | awk '{print $1}')"
+    echo "$(((size_kb + 1023) / 1024))"
+}
+
+free_space_mb() {
+    local path="$1"
+    local available_kb
+    available_kb="$(df -Pk "$path" | awk 'NR == 2 {print $4}')"
+    echo "$((available_kb / 1024))"
+}
+
+ensure_backup_space() {
+    validate_non_negative_integer "BACKUP_MIN_FREE_MB" "$BACKUP_MIN_FREE_MB"
+
+    local source_dir="$1"
+    local target_dir="$2"
+    local source_mb free_mb required_mb
+    source_mb="$(backup_size_mb "$source_dir")"
+    free_mb="$(free_space_mb "$target_dir")"
+    required_mb="$((source_mb + BACKUP_MIN_FREE_MB))"
+
+    if [[ "$free_mb" -lt "$required_mb" ]]; then
+        local message="Backup skipped: free space is ${free_mb}MB, required at least ${required_mb}MB."
+        echo "$message" >&2
+        notify_discord "$message"
+        if server_accepts_commands; then
+            send_server_command "say Backup skipped because disk space is low."
+        fi
+        exit 1
+    fi
+}
+
+validate_backup_archive() {
+    local archive="$1"
+
+    if [[ ! -f "$archive" ]]; then
+        echo "Backup archive not found: $archive" >&2
+        exit 1
+    fi
+
+    if ! tar -tzf "$archive" >/dev/null; then
+        echo "Backup archive is not readable: $archive" >&2
+        exit 1
+    fi
+
+    if ! tar -tzf "$archive" | grep -q '^worlds/'; then
+        echo "Backup archive does not contain worlds/: $archive" >&2
+        exit 1
+    fi
+}
+
 backup_server() {
     require_backup_deps
     validate_non_negative_integer "BACKUP_RETENTION_DAYS" "$BACKUP_RETENTION_DAYS"
@@ -292,6 +355,7 @@ backup_server() {
     fi
 
     mkdir -p "$BACKUP_DIR"
+    ensure_backup_space "$worlds_dir" "$BACKUP_DIR"
 
     local timestamp archive status=0
     timestamp="$(date +%Y%m%d-%H%M%S)"
@@ -328,6 +392,16 @@ backup_server() {
         exit 1
     fi
 
+    if ! tar -tzf "$archive" >/dev/null || ! tar -tzf "$archive" | grep -q '^worlds/'; then
+        rm -f "$archive"
+        notify_discord "Bedrock server backup failed verification."
+        if server_accepts_commands; then
+            send_server_command "say Backup failed verification."
+        fi
+        echo "Backup verification failed." >&2
+        exit 1
+    fi
+
     find "$BACKUP_DIR" \
         -type f \
         -name 'bds-worlds-*.tar.gz' \
@@ -343,6 +417,68 @@ backup_server() {
         send_server_command "say Backup completed."
     fi
     echo "Backup completed: $archive"
+}
+
+restore_server() {
+    require_backup_deps
+
+    local archive="${1:-}"
+    if [[ -z "$archive" ]]; then
+        echo "Usage: $0 restore <backup-archive>" >&2
+        exit 1
+    fi
+
+    validate_backup_archive "$archive"
+    mkdir -p "$DEST"
+
+    local service_was_active=0
+    if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME.service"; then
+        service_was_active=1
+        notify_discord "Bedrock server restore is stopping the server."
+        systemctl_run stop "$APP_NAME.service"
+    fi
+
+    local timestamp current_worlds restore_backup_dir
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    current_worlds="$DEST/worlds"
+    restore_backup_dir="$DEST/worlds.pre-restore-$timestamp"
+
+    if [[ -e "$current_worlds" ]]; then
+        mv "$current_worlds" "$restore_backup_dir"
+        echo "Moved existing worlds to: $restore_backup_dir"
+    fi
+
+    if ! tar -xzf "$archive" -C "$DEST"; then
+        echo "Restore failed while extracting: $archive" >&2
+        if [[ -d "$restore_backup_dir" && ! -e "$current_worlds" ]]; then
+            mv "$restore_backup_dir" "$current_worlds"
+            echo "Restored previous worlds from: $restore_backup_dir"
+        fi
+        exit 1
+    fi
+
+    if [[ ! -d "$current_worlds" ]]; then
+        echo "Restore failed: worlds/ was not extracted." >&2
+        if [[ -d "$restore_backup_dir" && ! -e "$current_worlds" ]]; then
+            mv "$restore_backup_dir" "$current_worlds"
+        fi
+        exit 1
+    fi
+
+    if [[ "$(id -u)" -eq 0 && -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST"
+    fi
+
+    notify_discord "Bedrock server restore completed: $(basename "$archive")"
+    echo "Restore completed from: $archive"
+    if [[ -d "$restore_backup_dir" ]]; then
+        echo "Previous worlds kept at: $restore_backup_dir"
+    fi
+
+    if [[ "$service_was_active" -eq 1 ]]; then
+        systemctl_run start "$APP_NAME.service"
+        notify_discord "Bedrock server restarted after restore."
+    fi
 }
 
 auto_update() {
@@ -527,6 +663,9 @@ case "$cmd" in
         ;;
     backup)
         backup_server
+        ;;
+    restore)
+        restore_server "${2:-}"
         ;;
     install-systemd)
         install_systemd
