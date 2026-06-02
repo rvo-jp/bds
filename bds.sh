@@ -26,7 +26,7 @@ Commands:
 
 Environment:
   BEDROCK_DIR      Install directory. Default: $BASE_DIR/bedrock-server
-  CHECK_INTERVAL   systemd timer interval. Default: 1h
+  CHECK_INTERVAL   systemd timer interval. Default: 6h
 EOF
 }
 
@@ -206,7 +206,7 @@ install_systemd() {
     local run_user run_group interval
     run_user="${SUDO_USER:-$(id -un)}"
     run_group="$(id -gn "$run_user")"
-    interval="${CHECK_INTERVAL:-1h}"
+    interval="${CHECK_INTERVAL:-6h}"
 
     install_server
     chown -R "$run_user:$run_group" "$BASE_DIR" "$DEST"
@@ -243,6 +243,8 @@ Wants=network-online.target
 Type=oneshot
 Environment=SERVICE_USER=$run_user
 Environment=SERVICE_GROUP=$run_group
+Nice=10
+IOSchedulingClass=idle
 ExecStart=$SCRIPT_PATH auto-update
 EOF
 

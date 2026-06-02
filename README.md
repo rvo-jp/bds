@@ -12,7 +12,7 @@ https://net.web.minecraft-services.net/api/v1.0/download/links
 
 ```text
 bds/
-├── update.sh
+├── bds.sh
 └── bedrock-server/
     ├── allowlist.json
     ├── bedrock_server
@@ -35,25 +35,26 @@ sudo apt install -y curl jq libarchive-tools unzip
 スクリプトに実行権限を付けます。
 
 ```bash
-chmod +x update.sh
+chmod +x bds.sh
 ```
 
 systemd service と timer をインストールします。
 
 ```bash
-sudo ./update.sh install-systemd
+sudo ./bds.sh install-systemd
 ```
 
 これで次の状態になります。
 
 - `bds.service` が Bedrock Dedicated Server を 24 時間稼働
-- `bds-update.timer` が 1 時間ごとに更新確認
+- `bds-update.timer` が 6 時間ごとに更新確認
 - 新版がある場合はサーバーを停止、更新、再起動
+- 更新処理は低 CPU/I/O 優先度で実行され、サーバー本体への影響を抑制
 
-更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。
+更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。Minecraft 側へ性能を寄せるため、通常は 6 時間以上を推奨します。
 
 ```bash
-sudo CHECK_INTERVAL=30min ./update.sh install-systemd
+sudo CHECK_INTERVAL=12h ./bds.sh install-systemd
 ```
 
 ## 操作
@@ -73,7 +74,7 @@ journalctl -u bds.service -f
 手動で更新確認します。
 
 ```bash
-sudo ./update.sh auto-update
+sudo ./bds.sh auto-update
 ```
 
 サーバーを停止、起動、再起動します。
@@ -93,7 +94,7 @@ systemctl list-timers bds-update.timer
 systemd 登録を削除します。
 
 ```bash
-sudo ./update.sh uninstall-systemd
+sudo ./bds.sh uninstall-systemd
 ```
 
 ## ポート
