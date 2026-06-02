@@ -2,11 +2,14 @@
 
 Ubuntu LTS の systemd を使って Minecraft Bedrock Dedicated Server を常時起動し、定期的に最新版の有無を確認するための運用スクリプトです。
 
-更新 URL は次の API から `serverBedrockLinux` を取得します。
+更新 URL は Minecraft の download links API から `serverBedrockLinux` を取得します。
 
 ```text
+https://net-secondary.web.minecraft-services.net/api/v1.0/download/links
 https://net.web.minecraft-services.net/api/v1.0/download/links
 ```
+
+`net-secondary` を優先して使い、失敗した場合は `net` に fallback します。
 
 ## 構成
 

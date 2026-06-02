@@ -6,7 +6,10 @@ APP_NAME="bds"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
 BASE_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 DEST="${BEDROCK_DIR:-$BASE_DIR/bedrock-server}"
-API_URL="https://net.web.minecraft-services.net/api/v1.0/download/links"
+API_URLS=(
+    "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
+    "https://net.web.minecraft-services.net/api/v1.0/download/links"
+)
 VERSION_FILE="$DEST/.installed-version"
 URL_FILE="$DEST/.installed-url"
 STDIN_FIFO="$DEST/.server.stdin"
@@ -119,8 +122,26 @@ warn_before_update() {
 }
 
 download_url() {
-    curl -fsSL "$API_URL" \
-        | jq -r '.result.links[] | select(.downloadType == "serverBedrockLinux") | .downloadUrl'
+    local api_url url
+    for api_url in "${API_URLS[@]}"; do
+        url="$(
+            curl -fsSL "$api_url" \
+                | jq -r '.result.links[] | select(.downloadType == "serverBedrockLinux") | .downloadUrl'
+        )" || {
+            echo "Download links API failed: $api_url" >&2
+            continue
+        }
+
+        if [[ -n "$url" && "$url" != "null" ]]; then
+            echo "Using download links API: $api_url" >&2
+            printf '%s\n' "$url"
+            return 0
+        fi
+
+        echo "Bedrock Linux server download URL not found in: $api_url" >&2
+    done
+
+    return 1
 }
 
 version_from_url() {
