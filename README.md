@@ -16,6 +16,7 @@ https://net.web.minecraft-services.net/api/v1.0/download/links
 ```text
 bds/
 ├── bds.sh
+├── backups/
 └── bedrock-server/
     ├── allowlist.json
     ├── bedrock_server
@@ -54,6 +55,7 @@ sudo ./bds.sh install-systemd
 - 新版がある場合はゲーム内へ警告し、5 分待ってからサーバーを停止、更新、再起動
 - 更新処理は低 CPU/I/O 優先度で実行され、サーバー本体への影響を抑制
 - 更新 service は警告待機とダウンロード時間を見込んで最大 30 分まで実行可能
+- `bds-backup.timer` が 1 日 1 回、ワールドをバックアップ
 
 更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。Minecraft 側へ性能を寄せるため、通常は 6 時間以上を推奨します。
 
@@ -69,6 +71,7 @@ sudo nano /etc/default/bds
 
 ```text
 UPDATE_NOTICE_SECONDS=300
+BACKUP_RETENTION_DAYS=14
 ```
 
 設定変更後は systemd を読み直します。
@@ -107,6 +110,12 @@ journalctl -u bds.service -f
 sudo ./bds.sh auto-update
 ```
 
+手動でワールドをバックアップします。
+
+```bash
+sudo ./bds.sh backup
+```
+
 サーバーを停止、起動、再起動します。
 
 ```bash
@@ -127,6 +136,50 @@ sudo systemctl restart bds.service
 - Discord 通知: 複数人で遊ぶサーバーなら設定推奨
 
 メンテナンスでサーバーを閉じる場合も、Discord とゲーム内 `say` の両方で事前通知するのが快適です。
+
+## バックアップ
+
+バックアップはデフォルトで毎日 `04:30` に実行され、プロジェクト配下の `backups/` に保存されます。サーバーが起動している場合は `save hold` でワールド保存を一時固定し、`worlds/` を `tar.gz` にまとめたあと `save resume` で通常保存に戻します。
+
+デフォルト設定は次の通りです。
+
+```text
+BACKUP_RETENTION_DAYS=14
+BACKUP_HOLD_SECONDS=10
+```
+
+`/etc/default/bds` に設定すると、systemd のバックアップ service に反映されます。`BACKUP_DIR` を指定する場合は絶対パスを使ってください。
+
+```bash
+sudo nano /etc/default/bds
+```
+
+```text
+BACKUP_DIR=/home/ubuntu/bds/backups
+BACKUP_RETENTION_DAYS=14
+BACKUP_HOLD_SECONDS=10
+```
+
+バックアップ実行時刻を変える場合は、systemd timer を作り直します。
+
+```bash
+sudo BACKUP_ON_CALENDAR="*-*-* 03:30:00" ./bds.sh install-systemd
+```
+
+バックアップ timer を確認します。
+
+```bash
+systemctl list-timers bds-backup.timer
+```
+
+復元する場合は、サーバーを停止してから対象バックアップを展開し、`bedrock-server/worlds/` を戻してください。
+
+```bash
+sudo systemctl stop bds.service
+tar -xzf backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz -C bedrock-server
+```
+
+重要なサーバーでは、`backups/` を別ディスクや外部ストレージにもコピーすることを推奨します。
 
 定期更新 timer を確認します。
 

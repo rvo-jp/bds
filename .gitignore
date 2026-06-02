@@ -3,6 +3,7 @@ Icon?
 
 # Bedrock server runtime files are downloaded/generated on the server.
 bedrock-server/
+backups/
 
 # Local logs and archives.
 *.log

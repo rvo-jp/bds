@@ -14,6 +14,10 @@ VERSION_FILE="$DEST/.installed-version"
 URL_FILE="$DEST/.installed-url"
 STDIN_FIFO="$DEST/.server.stdin"
 NOTICE_SECONDS="${UPDATE_NOTICE_SECONDS:-300}"
+BACKUP_DIR="${BACKUP_DIR:-$BASE_DIR/backups}"
+BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
+BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 
 usage() {
     cat <<EOF
@@ -24,6 +28,7 @@ Commands:
   start            Start bedrock_server in the foreground.
   stop             Send "stop" to a running server started by this script.
   auto-update      Check for updates. If updated, restart the systemd service.
+  backup           Create a worlds backup without stopping the server.
   install-systemd  Install systemd service and timer for 24/7 operation.
   uninstall-systemd
                    Remove installed systemd service and timer.
@@ -33,6 +38,13 @@ Environment:
   CHECK_INTERVAL   systemd timer interval. Default: 6h
   UPDATE_NOTICE_SECONDS
                    Seconds to warn players before update restart. Default: 300
+  BACKUP_DIR       Backup directory. Default: $BASE_DIR/backups
+  BACKUP_RETENTION_DAYS
+                   Days to keep backups. Default: 14
+  BACKUP_ON_CALENDAR
+                   systemd backup schedule. Default: *-*-* 04:30:00
+  BACKUP_HOLD_SECONDS
+                   Seconds to wait after save hold. Default: 10
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -54,6 +66,14 @@ require_deps() {
         echo "Install dependencies on Ubuntu: sudo apt update && sudo apt install -y libarchive-tools unzip" >&2
         exit 1
     fi
+}
+
+require_backup_deps() {
+    need_cmd tar
+    need_cmd find
+    need_cmd date
+    need_cmd curl
+    need_cmd jq
 }
 
 systemctl_run() {
@@ -244,6 +264,87 @@ stop_server() {
     send_server_command "stop"
 }
 
+validate_non_negative_integer() {
+    local name="$1"
+    local value="$2"
+
+    case "$value" in
+        ''|*[!0-9]*)
+            echo "$name must be a non-negative integer: $value" >&2
+            exit 1
+            ;;
+    esac
+}
+
+server_accepts_commands() {
+    [[ -p "$STDIN_FIFO" ]]
+}
+
+backup_server() {
+    require_backup_deps
+    validate_non_negative_integer "BACKUP_RETENTION_DAYS" "$BACKUP_RETENTION_DAYS"
+    validate_non_negative_integer "BACKUP_HOLD_SECONDS" "$BACKUP_HOLD_SECONDS"
+
+    local worlds_dir="$DEST/worlds"
+    if [[ ! -d "$worlds_dir" ]]; then
+        echo "Worlds directory not found: $worlds_dir" >&2
+        exit 1
+    fi
+
+    mkdir -p "$BACKUP_DIR"
+
+    local timestamp archive status=0
+    timestamp="$(date +%Y%m%d-%H%M%S)"
+    archive="$BACKUP_DIR/bds-worlds-$timestamp.tar.gz"
+
+    echo "Creating backup: $archive"
+    notify_discord "Bedrock server backup is starting."
+
+    local resume_trap_set=0
+    if server_accepts_commands; then
+        send_server_command "say Backup starting. The server may pause briefly."
+        send_server_command "save hold"
+        trap 'send_server_command "save resume"' INT TERM EXIT
+        resume_trap_set=1
+        sleep "$BACKUP_HOLD_SECONDS"
+    fi
+
+    if ! tar -czf "$archive" -C "$DEST" worlds; then
+        status=1
+    fi
+
+    if [[ "$resume_trap_set" -eq 1 ]]; then
+        send_server_command "save resume"
+        trap - INT TERM EXIT
+    fi
+
+    if [[ "$status" -ne 0 ]]; then
+        rm -f "$archive"
+        notify_discord "Bedrock server backup failed."
+        if server_accepts_commands; then
+            send_server_command "say Backup failed."
+        fi
+        echo "Backup failed." >&2
+        exit 1
+    fi
+
+    find "$BACKUP_DIR" \
+        -type f \
+        -name 'bds-worlds-*.tar.gz' \
+        -mtime +"$BACKUP_RETENTION_DAYS" \
+        -delete
+
+    if [[ "$(id -u)" -eq 0 && -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$BACKUP_DIR"
+    fi
+
+    notify_discord "Bedrock server backup completed: $(basename "$archive")"
+    if server_accepts_commands; then
+        send_server_command "say Backup completed."
+    fi
+    echo "Backup completed: $archive"
+}
+
 auto_update() {
     require_deps
 
@@ -291,10 +392,11 @@ install_systemd() {
         exit 1
     fi
 
-    local run_user run_group interval
+    local run_user run_group interval backup_on_calendar
     run_user="${SUDO_USER:-$(id -un)}"
     run_group="$(id -gn "$run_user")"
     interval="${CHECK_INTERVAL:-6h}"
+    backup_on_calendar="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 
     install_server
     chown -R "$run_user:$run_group" "$BASE_DIR" "$DEST"
@@ -351,13 +453,43 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+    cat >/etc/systemd/system/$APP_NAME-backup.service <<EOF
+[Unit]
+Description=Backup Minecraft Bedrock Dedicated Server worlds
+After=$APP_NAME.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/$APP_NAME
+Environment=SERVICE_USER=$run_user
+Environment=SERVICE_GROUP=$run_group
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h
+ExecStart=$SCRIPT_PATH backup
+EOF
+
+    cat >/etc/systemd/system/$APP_NAME-backup.timer <<EOF
+[Unit]
+Description=Daily Minecraft Bedrock Dedicated Server backup
+
+[Timer]
+OnCalendar=$backup_on_calendar
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
     systemctl daemon-reload
     systemctl enable --now "$APP_NAME.service"
     systemctl enable --now "$APP_NAME-update.timer"
+    systemctl enable --now "$APP_NAME-backup.timer"
 
     echo "Installed and started:"
     echo "  systemctl status $APP_NAME.service"
     echo "  systemctl status $APP_NAME-update.timer"
+    echo "  systemctl status $APP_NAME-backup.timer"
 }
 
 uninstall_systemd() {
@@ -366,12 +498,15 @@ uninstall_systemd() {
         exit 1
     fi
 
+    systemctl disable --now "$APP_NAME-backup.timer" 2>/dev/null || true
     systemctl disable --now "$APP_NAME-update.timer" 2>/dev/null || true
     systemctl disable --now "$APP_NAME.service" 2>/dev/null || true
     rm -f \
         "/etc/systemd/system/$APP_NAME.service" \
         "/etc/systemd/system/$APP_NAME-update.service" \
-        "/etc/systemd/system/$APP_NAME-update.timer"
+        "/etc/systemd/system/$APP_NAME-update.timer" \
+        "/etc/systemd/system/$APP_NAME-backup.service" \
+        "/etc/systemd/system/$APP_NAME-backup.timer"
     systemctl daemon-reload
     echo "Removed systemd units."
 }
@@ -389,6 +524,9 @@ case "$cmd" in
         ;;
     auto-update)
         auto_update
+        ;;
+    backup)
+        backup_server
         ;;
     install-systemd)
         install_systemd
