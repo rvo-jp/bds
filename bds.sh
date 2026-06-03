@@ -21,6 +21,10 @@ BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 CURL_RETRY="${CURL_RETRY:-5}"
 CURL_RETRY_DELAY="${CURL_RETRY_DELAY:-5}"
+CURL_SPEED_TIME="${CURL_SPEED_TIME:-60}"
+CURL_SPEED_LIMIT="${CURL_SPEED_LIMIT:-1024}"
+CURL_MAX_TIME="${CURL_MAX_TIME:-1800}"
+CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 bds-installer}"
 
 usage() {
     cat <<EOF
@@ -54,6 +58,9 @@ Environment:
                    Minimum free space before backup. Default: 1024
   CURL_RETRY       curl retry count. Default: 5
   CURL_RETRY_DELAY curl retry delay seconds. Default: 5
+  CURL_SPEED_TIME  Seconds before a slow download is aborted. Default: 60
+  CURL_SPEED_LIMIT Minimum bytes/sec during CURL_SPEED_TIME. Default: 1024
+  CURL_MAX_TIME    Maximum seconds for one curl attempt. Default: 1800
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -109,6 +116,10 @@ curl_json() {
         --retry-delay "$CURL_RETRY_DELAY" \
         --retry-all-errors \
         --connect-timeout 30 \
+        --speed-time "$CURL_SPEED_TIME" \
+        --speed-limit "$CURL_SPEED_LIMIT" \
+        --max-time "$CURL_MAX_TIME" \
+        --user-agent "$CURL_USER_AGENT" \
         "$url"; then
         return 0
     fi
@@ -124,6 +135,10 @@ curl_json() {
         --retry-delay "$CURL_RETRY_DELAY" \
         --retry-all-errors \
         --connect-timeout 30 \
+        --speed-time "$CURL_SPEED_TIME" \
+        --speed-limit "$CURL_SPEED_LIMIT" \
+        --max-time "$CURL_MAX_TIME" \
+        --user-agent "$CURL_USER_AGENT" \
         "$url"
 }
 
@@ -138,13 +153,18 @@ curl_download() {
         --retry-delay "$CURL_RETRY_DELAY" \
         --retry-all-errors \
         --connect-timeout 30 \
+        --speed-time "$CURL_SPEED_TIME" \
+        --speed-limit "$CURL_SPEED_LIMIT" \
+        --max-time "$CURL_MAX_TIME" \
+        --user-agent "$CURL_USER_AGENT" \
+        --referer "https://www.minecraft.net/en-us/download/server/bedrock" \
         --output "$output" \
         "$url"; then
         return 0
     fi
 
     echo "Download failed with default HTTP settings. Retrying with HTTP/1.1..." >&2
-    curl \
+    if curl \
         --http1.1 \
         --fail \
         --location \
@@ -152,6 +172,31 @@ curl_download() {
         --retry-delay "$CURL_RETRY_DELAY" \
         --retry-all-errors \
         --connect-timeout 30 \
+        --speed-time "$CURL_SPEED_TIME" \
+        --speed-limit "$CURL_SPEED_LIMIT" \
+        --max-time "$CURL_MAX_TIME" \
+        --user-agent "$CURL_USER_AGENT" \
+        --referer "https://www.minecraft.net/en-us/download/server/bedrock" \
+        --output "$output" \
+        "$url"; then
+        return 0
+    fi
+
+    echo "Download failed with HTTP/1.1. Retrying with IPv4 + HTTP/1.1..." >&2
+    curl \
+        --ipv4 \
+        --http1.1 \
+        --fail \
+        --location \
+        --retry "$CURL_RETRY" \
+        --retry-delay "$CURL_RETRY_DELAY" \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --speed-time "$CURL_SPEED_TIME" \
+        --speed-limit "$CURL_SPEED_LIMIT" \
+        --max-time "$CURL_MAX_TIME" \
+        --user-agent "$CURL_USER_AGENT" \
+        --referer "https://www.minecraft.net/en-us/download/server/bedrock" \
         --output "$output" \
         "$url"
 }
