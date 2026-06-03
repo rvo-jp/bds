@@ -90,6 +90,19 @@ Discord Webhook URL を設定すると、通常のサーバー起動・停止、
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
+通知される主な内容は次の通りです。
+
+- サーバー起動、停止
+- アップデート検知、開始、完了
+- バックアップ開始、完了、失敗、空き容量不足
+- バックアップ復元の開始、完了、復元後の再起動
+
+手動で Discord 通知を送ることもできます。
+
+```bash
+sudo ./bds.sh notify "メンテナンスを開始します。"
+```
+
 Webhook URL は秘匿情報なので、README や Git には入れず `/etc/default/bds` にだけ保存してください。
 
 既に `install-systemd` 済みの環境で通知設定や通知対象が変わった場合は、systemd unit を再生成します。
@@ -136,6 +149,35 @@ sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 sudo systemctl stop bds.service
 sudo systemctl start bds.service
 sudo systemctl restart bds.service
+```
+
+## ワールド内コマンド送信
+
+`bds.service` で起動している間は、次の FIFO に Bedrock server の stdin コマンドを送れます。
+
+```text
+/opt/bds/bedrock-server/.server.stdin
+```
+
+例:
+
+```bash
+printf 'say メンテナンスを5分後に開始します。\n' > /opt/bds/bedrock-server/.server.stdin
+printf 'list\n' > /opt/bds/bedrock-server/.server.stdin
+printf 'save hold\n' > /opt/bds/bedrock-server/.server.stdin
+printf 'save resume\n' > /opt/bds/bedrock-server/.server.stdin
+```
+
+停止は `bds.sh` 経由でも送れます。
+
+```bash
+sudo ./bds.sh stop
+```
+
+FIFO はサーバー起動中だけ存在します。存在確認:
+
+```bash
+ls -l /opt/bds/bedrock-server/.server.stdin
 ```
 
 ## メンテナンス方針
