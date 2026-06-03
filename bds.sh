@@ -370,21 +370,42 @@ ensure_backup_space() {
 
 validate_backup_archive() {
     local archive="$1"
+    local validation_status=0
 
     if [[ ! -f "$archive" ]]; then
         echo "Backup archive not found: $archive" >&2
         exit 1
     fi
 
-    if ! tar -tzf "$archive" >/dev/null; then
+    archive_contains_worlds "$archive" || validation_status=$?
+    if [[ "$validation_status" -eq 2 ]]; then
         echo "Backup archive is not readable: $archive" >&2
         exit 1
     fi
 
-    if ! tar -tzf "$archive" | grep -q '^worlds/'; then
+    if [[ "$validation_status" -ne 0 ]]; then
         echo "Backup archive does not contain worlds/: $archive" >&2
         exit 1
     fi
+}
+
+archive_contains_worlds() {
+    local archive="$1"
+    local list_file
+
+    list_file="$(mktemp)"
+    if ! tar -tzf "$archive" > "$list_file"; then
+        rm -f "$list_file"
+        return 2
+    fi
+
+    if grep -q '^worlds/' "$list_file"; then
+        rm -f "$list_file"
+        return 0
+    fi
+
+    rm -f "$list_file"
+    return 1
 }
 
 create_backup_archive() {
@@ -464,7 +485,9 @@ backup_server() {
         exit 1
     fi
 
-    if ! tar -tzf "$archive" >/dev/null || ! tar -tzf "$archive" | grep -q '^worlds/'; then
+    local validation_status=0
+    archive_contains_worlds "$archive" || validation_status=$?
+    if [[ "$validation_status" -ne 0 ]]; then
         rm -f "$archive"
         notify_discord "バックアップ検証に失敗しました。"
         if server_accepts_commands; then
