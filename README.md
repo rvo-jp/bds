@@ -72,12 +72,21 @@ sudo nano /etc/default/bds
 ```text
 UPDATE_NOTICE_SECONDS=300
 BACKUP_RETENTION_DAYS=14
+CURL_RETRY=5
+CURL_RETRY_DELAY=5
 ```
 
 設定変更後は systemd を読み直します。
 
 ```bash
 sudo systemctl daemon-reload
+```
+
+`curl: (92) HTTP/2 stream ... INTERNAL_ERROR` のような CDN 側の一時エラーが出た場合でも、ダウンロードは自動 retry し、失敗時は HTTP/1.1 で再試行します。必要に応じて `/etc/default/bds` で retry 回数と待機秒数を調整できます。
+
+```text
+CURL_RETRY=5
+CURL_RETRY_DELAY=5
 ```
 
 ## Discord 通知

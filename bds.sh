@@ -19,6 +19,8 @@ BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
+CURL_RETRY="${CURL_RETRY:-5}"
+CURL_RETRY_DELAY="${CURL_RETRY_DELAY:-5}"
 
 usage() {
     cat <<EOF
@@ -50,6 +52,8 @@ Environment:
                    Seconds to wait after save hold. Default: 10
   BACKUP_MIN_FREE_MB
                    Minimum free space before backup. Default: 1024
+  CURL_RETRY       curl retry count. Default: 5
+  CURL_RETRY_DELAY curl retry delay seconds. Default: 5
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -91,6 +95,65 @@ systemctl_run() {
     else
         sudo systemctl "$@"
     fi
+}
+
+curl_json() {
+    local url="$1"
+
+    if curl \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --retry "$CURL_RETRY" \
+        --retry-delay "$CURL_RETRY_DELAY" \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        "$url"; then
+        return 0
+    fi
+
+    echo "API request failed with default HTTP settings. Retrying with HTTP/1.1..." >&2
+    curl \
+        --http1.1 \
+        --fail \
+        --silent \
+        --show-error \
+        --location \
+        --retry "$CURL_RETRY" \
+        --retry-delay "$CURL_RETRY_DELAY" \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        "$url"
+}
+
+curl_download() {
+    local url="$1"
+    local output="$2"
+
+    if curl \
+        --fail \
+        --location \
+        --retry "$CURL_RETRY" \
+        --retry-delay "$CURL_RETRY_DELAY" \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --output "$output" \
+        "$url"; then
+        return 0
+    fi
+
+    echo "Download failed with default HTTP settings. Retrying with HTTP/1.1..." >&2
+    curl \
+        --http1.1 \
+        --fail \
+        --location \
+        --retry "$CURL_RETRY" \
+        --retry-delay "$CURL_RETRY_DELAY" \
+        --retry-all-errors \
+        --connect-timeout 30 \
+        --output "$output" \
+        "$url"
 }
 
 send_server_command() {
@@ -154,7 +217,7 @@ download_url() {
     local api_url url
     for api_url in "${API_URLS[@]}"; do
         url="$(
-            curl -fsSL "$api_url" \
+            curl_json "$api_url" \
                 | jq -r '.result.links[] | select(.downloadType == "serverBedrockLinux") | .downloadUrl'
         )" || {
             echo "Download links API failed: $api_url" >&2
@@ -191,7 +254,7 @@ extract_server() {
     trap 'rm -f "$tmp_zip"' RETURN
 
     echo "Downloading: $url"
-    curl -fL "$url" -o "$tmp_zip"
+    curl_download "$url" "$tmp_zip"
 
     mkdir -p "$DEST"
 
