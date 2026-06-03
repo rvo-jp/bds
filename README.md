@@ -72,11 +72,6 @@ sudo nano /etc/default/bds
 ```text
 UPDATE_NOTICE_SECONDS=300
 BACKUP_RETENTION_DAYS=14
-CURL_RETRY=5
-CURL_RETRY_DELAY=5
-CURL_SPEED_TIME=60
-CURL_SPEED_LIMIT=1024
-CURL_MAX_TIME=1800
 ```
 
 設定変更後は systemd を読み直します。
@@ -85,15 +80,7 @@ CURL_MAX_TIME=1800
 sudo systemctl daemon-reload
 ```
 
-`curl: (92) HTTP/2 stream ... INTERNAL_ERROR` のような CDN 側の一時エラーが出た場合でも、ダウンロードは自動 retry し、失敗時は HTTP/1.1、さらに IPv4 + HTTP/1.1 で再試行します。転送が止まったままにならないよう、低速状態が続く場合も中断して次の方式へ進みます。必要に応じて `/etc/default/bds` で retry 回数やタイムアウトを調整できます。
-
-```text
-CURL_RETRY=5
-CURL_RETRY_DELAY=5
-CURL_SPEED_TIME=60
-CURL_SPEED_LIMIT=1024
-CURL_MAX_TIME=1800
-```
+Minecraft 公式の ZIP ダウンロードでは、ブラウザ相当の `User-Agent` と `Referer` ヘッダーを付けて取得します。
 
 ## Discord 通知
 
