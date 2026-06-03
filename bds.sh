@@ -17,7 +17,9 @@ NOTICE_SECONDS="${UPDATE_NOTICE_SECONDS:-300}"
 BACKUP_DIR="${BACKUP_DIR:-$BASE_DIR/backups}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
-BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
+BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-30}"
+BACKUP_TAR_RETRY="${BACKUP_TAR_RETRY:-3}"
+BACKUP_TAR_RETRY_DELAY="${BACKUP_TAR_RETRY_DELAY:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 bds-installer}"
 
@@ -49,7 +51,11 @@ Environment:
   BACKUP_ON_CALENDAR
                    systemd backup schedule. Default: *-*-* 04:30:00
   BACKUP_HOLD_SECONDS
-                   Seconds to wait after save hold. Default: 10
+                   Seconds to wait after save hold. Default: 30
+  BACKUP_TAR_RETRY
+                   tar retry count when backup creation fails. Default: 3
+  BACKUP_TAR_RETRY_DELAY
+                   Seconds between tar retries. Default: 10
   BACKUP_MIN_FREE_MB
                    Minimum free space before backup. Default: 1024
   DISCORD_WEBHOOK_URL
@@ -170,18 +176,18 @@ warn_before_update() {
         return 0
     fi
 
-    notify_discord "Bedrock サーバーの更新が見つかりました: ${old_version:-none} -> $new_version。${seconds}秒後に再起動します。"
-    send_server_command "say サーバー更新が見つかりました。${seconds}秒後に再起動します。"
+    notify_discord "アップデートが見つかりました: ${old_version:-none} -> $new_version。${seconds}秒後に再起動します。"
+    send_server_command "say アップデートが見つかりました。${seconds}秒後に再起動します。"
 
     if [[ "$seconds" -gt 120 ]]; then
         sleep "$((seconds - 60))"
-        send_server_command "say サーバー更新を1分後に開始します。"
+        send_server_command "say アップデートを1分後に開始します。"
         sleep 50
-        send_server_command "say サーバー更新を10秒後に開始します。"
+        send_server_command "say アップデートを10秒後に開始します。"
         sleep 10
     elif [[ "$seconds" -gt 10 ]]; then
         sleep "$((seconds - 10))"
-        send_server_command "say サーバー更新を10秒後に開始します。"
+        send_server_command "say アップデートを10秒後に開始します。"
         sleep 10
     else
         sleep "$seconds"
@@ -381,6 +387,31 @@ validate_backup_archive() {
     fi
 }
 
+create_backup_archive() {
+    local archive="$1"
+    local attempt=1
+
+    validate_non_negative_integer "BACKUP_TAR_RETRY" "$BACKUP_TAR_RETRY"
+    validate_non_negative_integer "BACKUP_TAR_RETRY_DELAY" "$BACKUP_TAR_RETRY_DELAY"
+
+    while [[ "$attempt" -le "$BACKUP_TAR_RETRY" ]]; do
+        rm -f "$archive"
+        echo "Creating backup archive, attempt ${attempt}/${BACKUP_TAR_RETRY}: $archive"
+        if tar -czf "$archive" -C "$DEST" worlds; then
+            return 0
+        fi
+
+        echo "Backup archive creation failed, attempt ${attempt}/${BACKUP_TAR_RETRY}." >&2
+        attempt="$((attempt + 1))"
+        if [[ "$attempt" -le "$BACKUP_TAR_RETRY" ]]; then
+            sleep "$BACKUP_TAR_RETRY_DELAY"
+        fi
+    done
+
+    rm -f "$archive"
+    return 1
+}
+
 backup_server() {
     require_backup_deps
     validate_non_negative_integer "BACKUP_RETENTION_DAYS" "$BACKUP_RETENTION_DAYS"
@@ -388,7 +419,9 @@ backup_server() {
 
     local worlds_dir="$DEST/worlds"
     if [[ ! -d "$worlds_dir" ]]; then
-        echo "Worlds directory not found: $worlds_dir" >&2
+        local message="ワールドディレクトリが見つからないため、バックアップを中止しました: $worlds_dir"
+        echo "$message" >&2
+        notify_discord "$message"
         exit 1
     fi
 
@@ -400,7 +433,7 @@ backup_server() {
     archive="$BACKUP_DIR/bds-worlds-$timestamp.tar.gz"
 
     echo "Creating backup: $archive"
-    notify_discord "Bedrock サーバーのバックアップを開始します。"
+    notify_discord "バックアップを開始します。"
 
     local resume_trap_set=0
     if server_accepts_commands; then
@@ -408,10 +441,11 @@ backup_server() {
         send_server_command "save hold"
         trap 'send_server_command "save resume"' INT TERM EXIT
         resume_trap_set=1
+        echo "Waiting ${BACKUP_HOLD_SECONDS}s after save hold before archiving."
         sleep "$BACKUP_HOLD_SECONDS"
     fi
 
-    if ! tar -czf "$archive" -C "$DEST" worlds; then
+    if ! create_backup_archive "$archive"; then
         status=1
     fi
 
@@ -422,7 +456,7 @@ backup_server() {
 
     if [[ "$status" -ne 0 ]]; then
         rm -f "$archive"
-        notify_discord "Bedrock サーバーのバックアップに失敗しました。"
+        notify_discord "バックアップに失敗しました。"
         if server_accepts_commands; then
             send_server_command "say バックアップに失敗しました。"
         fi
@@ -432,7 +466,7 @@ backup_server() {
 
     if ! tar -tzf "$archive" >/dev/null || ! tar -tzf "$archive" | grep -q '^worlds/'; then
         rm -f "$archive"
-        notify_discord "Bedrock サーバーのバックアップ検証に失敗しました。"
+        notify_discord "バックアップ検証に失敗しました。"
         if server_accepts_commands; then
             send_server_command "say バックアップ検証に失敗しました。"
         fi
@@ -450,7 +484,7 @@ backup_server() {
         chown -R "$SERVICE_USER:$SERVICE_GROUP" "$BACKUP_DIR"
     fi
 
-    notify_discord "Bedrock サーバーのバックアップが完了しました: $(basename "$archive")"
+    notify_discord "バックアップが完了しました: $(basename "$archive")"
     if server_accepts_commands; then
         send_server_command "say バックアップが完了しました。"
     fi
@@ -472,7 +506,7 @@ restore_server() {
     local service_was_active=0
     if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME.service"; then
         service_was_active=1
-        notify_discord "Bedrock サーバーの復元のため、サーバーを停止します。"
+        notify_discord "バックアップの復元のため、サーバーを停止します。"
         systemctl_run stop "$APP_NAME.service"
     fi
 
@@ -507,7 +541,7 @@ restore_server() {
         chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST"
     fi
 
-    notify_discord "Bedrock サーバーの復元が完了しました: $(basename "$archive")"
+    notify_discord "バックアップの復元が完了しました: $(basename "$archive")"
     echo "Restore completed from: $archive"
     if [[ -d "$restore_backup_dir" ]]; then
         echo "Previous worlds kept at: $restore_backup_dir"
@@ -515,7 +549,7 @@ restore_server() {
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
-        notify_discord "復元後に Bedrock サーバーを再起動しました。"
+        notify_discord "復元後にサーバーを再起動しました。"
     fi
 }
 
@@ -543,7 +577,7 @@ auto_update() {
         systemctl_run stop "$APP_NAME.service"
     fi
 
-    notify_discord "Bedrock サーバーの更新を開始します: ${installed:-none} -> $version。"
+    notify_discord "アップデートを開始します: ${installed:-none} -> $version。"
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
@@ -554,9 +588,9 @@ auto_update() {
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
-        notify_discord "Bedrock サーバーの更新が完了しました: $version。サーバーを再起動しました。"
+        notify_discord "アップデートが完了しました: $version。サーバーを再起動しました。"
     else
-        notify_discord "Bedrock サーバーの更新が完了しました: $version。"
+        notify_discord "アップデートが完了しました: $version。"
     fi
 }
 
@@ -589,9 +623,9 @@ Group=$run_group
 WorkingDirectory=$DEST
 Environment=LD_LIBRARY_PATH=$DEST
 ExecStart=$SCRIPT_PATH start
-ExecStartPost=$SCRIPT_PATH notify "Bedrock サーバーが起動しました。"
+ExecStartPost=$SCRIPT_PATH notify "サーバーが起動しました。"
 ExecStop=$SCRIPT_PATH stop
-ExecStopPost=$SCRIPT_PATH notify "Bedrock サーバーが停止しました。"
+ExecStopPost=$SCRIPT_PATH notify "サーバーが停止しました。"
 Restart=always
 RestartSec=10
 TimeoutStopSec=60
