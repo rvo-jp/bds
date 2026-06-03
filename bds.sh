@@ -296,7 +296,7 @@ extract_server() {
     local url="$1"
     local tmp_zip
     tmp_zip="$(mktemp)"
-    trap 'rm -f "$tmp_zip"' RETURN
+    trap "rm -f '$tmp_zip'; trap - RETURN" RETURN
 
     echo "Downloading: $url"
     curl_download "$url" "$tmp_zip"
