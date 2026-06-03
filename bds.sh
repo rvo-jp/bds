@@ -170,18 +170,18 @@ warn_before_update() {
         return 0
     fi
 
-    notify_discord "Bedrock server update found: ${old_version:-none} -> $new_version. Restarting in ${seconds}s."
-    send_server_command "say Server update found. Restarting in ${seconds} seconds."
+    notify_discord "Bedrock サーバーの更新が見つかりました: ${old_version:-none} -> $new_version。${seconds}秒後に再起動します。"
+    send_server_command "say サーバー更新が見つかりました。${seconds}秒後に再起動します。"
 
     if [[ "$seconds" -gt 120 ]]; then
         sleep "$((seconds - 60))"
-        send_server_command "say Server update starts in 1 minute."
+        send_server_command "say サーバー更新を1分後に開始します。"
         sleep 50
-        send_server_command "say Server update starts in 10 seconds."
+        send_server_command "say サーバー更新を10秒後に開始します。"
         sleep 10
     elif [[ "$seconds" -gt 10 ]]; then
         sleep "$((seconds - 10))"
-        send_server_command "say Server update starts in 10 seconds."
+        send_server_command "say サーバー更新を10秒後に開始します。"
         sleep 10
     else
         sleep "$seconds"
@@ -352,11 +352,11 @@ ensure_backup_space() {
     required_mb="$((source_mb + BACKUP_MIN_FREE_MB))"
 
     if [[ "$free_mb" -lt "$required_mb" ]]; then
-        local message="Backup skipped: free space is ${free_mb}MB, required at least ${required_mb}MB."
+        local message="バックアップを中止しました: 空き容量は${free_mb}MB、必要容量は${required_mb}MBです。"
         echo "$message" >&2
         notify_discord "$message"
         if server_accepts_commands; then
-            send_server_command "say Backup skipped because disk space is low."
+            send_server_command "say 空き容量が不足しているため、バックアップを中止しました。"
         fi
         exit 1
     fi
@@ -400,11 +400,11 @@ backup_server() {
     archive="$BACKUP_DIR/bds-worlds-$timestamp.tar.gz"
 
     echo "Creating backup: $archive"
-    notify_discord "Bedrock server backup is starting."
+    notify_discord "Bedrock サーバーのバックアップを開始します。"
 
     local resume_trap_set=0
     if server_accepts_commands; then
-        send_server_command "say Backup starting. The server may pause briefly."
+        send_server_command "say バックアップを開始します。短時間サーバーが重くなる場合があります。"
         send_server_command "save hold"
         trap 'send_server_command "save resume"' INT TERM EXIT
         resume_trap_set=1
@@ -422,9 +422,9 @@ backup_server() {
 
     if [[ "$status" -ne 0 ]]; then
         rm -f "$archive"
-        notify_discord "Bedrock server backup failed."
+        notify_discord "Bedrock サーバーのバックアップに失敗しました。"
         if server_accepts_commands; then
-            send_server_command "say Backup failed."
+            send_server_command "say バックアップに失敗しました。"
         fi
         echo "Backup failed." >&2
         exit 1
@@ -432,9 +432,9 @@ backup_server() {
 
     if ! tar -tzf "$archive" >/dev/null || ! tar -tzf "$archive" | grep -q '^worlds/'; then
         rm -f "$archive"
-        notify_discord "Bedrock server backup failed verification."
+        notify_discord "Bedrock サーバーのバックアップ検証に失敗しました。"
         if server_accepts_commands; then
-            send_server_command "say Backup failed verification."
+            send_server_command "say バックアップ検証に失敗しました。"
         fi
         echo "Backup verification failed." >&2
         exit 1
@@ -450,9 +450,9 @@ backup_server() {
         chown -R "$SERVICE_USER:$SERVICE_GROUP" "$BACKUP_DIR"
     fi
 
-    notify_discord "Bedrock server backup completed: $(basename "$archive")"
+    notify_discord "Bedrock サーバーのバックアップが完了しました: $(basename "$archive")"
     if server_accepts_commands; then
-        send_server_command "say Backup completed."
+        send_server_command "say バックアップが完了しました。"
     fi
     echo "Backup completed: $archive"
 }
@@ -472,7 +472,7 @@ restore_server() {
     local service_was_active=0
     if command -v systemctl >/dev/null 2>&1 && systemctl is-active --quiet "$APP_NAME.service"; then
         service_was_active=1
-        notify_discord "Bedrock server restore is stopping the server."
+        notify_discord "Bedrock サーバーの復元のため、サーバーを停止します。"
         systemctl_run stop "$APP_NAME.service"
     fi
 
@@ -507,7 +507,7 @@ restore_server() {
         chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST"
     fi
 
-    notify_discord "Bedrock server restore completed: $(basename "$archive")"
+    notify_discord "Bedrock サーバーの復元が完了しました: $(basename "$archive")"
     echo "Restore completed from: $archive"
     if [[ -d "$restore_backup_dir" ]]; then
         echo "Previous worlds kept at: $restore_backup_dir"
@@ -515,7 +515,7 @@ restore_server() {
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
-        notify_discord "Bedrock server restarted after restore."
+        notify_discord "復元後に Bedrock サーバーを再起動しました。"
     fi
 }
 
@@ -543,7 +543,7 @@ auto_update() {
         systemctl_run stop "$APP_NAME.service"
     fi
 
-    notify_discord "Bedrock server update is starting: ${installed:-none} -> $version."
+    notify_discord "Bedrock サーバーの更新を開始します: ${installed:-none} -> $version。"
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
@@ -554,9 +554,9 @@ auto_update() {
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
-        notify_discord "Bedrock server update completed: $version. Server restarted."
+        notify_discord "Bedrock サーバーの更新が完了しました: $version。サーバーを再起動しました。"
     else
-        notify_discord "Bedrock server update completed: $version."
+        notify_discord "Bedrock サーバーの更新が完了しました: $version。"
     fi
 }
 
@@ -589,9 +589,9 @@ Group=$run_group
 WorkingDirectory=$DEST
 Environment=LD_LIBRARY_PATH=$DEST
 ExecStart=$SCRIPT_PATH start
-ExecStartPost=$SCRIPT_PATH notify "Bedrock server started."
+ExecStartPost=$SCRIPT_PATH notify "Bedrock サーバーが起動しました。"
 ExecStop=$SCRIPT_PATH stop
-ExecStopPost=$SCRIPT_PATH notify "Bedrock server stopped."
+ExecStopPost=$SCRIPT_PATH notify "Bedrock サーバーが停止しました。"
 Restart=always
 RestartSec=10
 TimeoutStopSec=60

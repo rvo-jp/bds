@@ -84,7 +84,7 @@ Minecraft 公式の ZIP ダウンロードでは、ブラウザ相当の `User-A
 
 ## Discord 通知
 
-Discord Webhook URL を設定すると、通常のサーバー起動・停止、アップデート、バックアップ、復元のタイミングで通知します。
+Discord Webhook URL を設定すると、通常のサーバー起動・停止、アップデート、バックアップ、復元のタイミングで日本語通知します。
 
 ```text
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
