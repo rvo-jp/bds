@@ -38,6 +38,7 @@ Commands:
   backup           Create a worlds backup without stopping the server.
   restore <archive>
                    Restore worlds from a backup archive.
+  notify <message> Send a Discord notification when DISCORD_WEBHOOK_URL is set.
   install-systemd  Install systemd service and timer for 24/7 operation.
   uninstall-systemd
                    Remove installed systemd service and timer.
@@ -222,6 +223,17 @@ notify_discord() {
         "$DISCORD_WEBHOOK_URL" \
         >/dev/null \
         || echo "Discord notification failed." >&2
+}
+
+notify_command() {
+    local message="${1:-}"
+    if [[ -z "$message" ]]; then
+        echo "Usage: $0 notify <message>" >&2
+        exit 1
+    fi
+
+    notify_discord "$message"
+    return 0
 }
 
 warn_before_update() {
@@ -653,12 +665,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/default/$APP_NAME
 User=$run_user
 Group=$run_group
 WorkingDirectory=$DEST
 Environment=LD_LIBRARY_PATH=$DEST
 ExecStart=$SCRIPT_PATH start
+ExecStartPost=$SCRIPT_PATH notify "Bedrock server started."
 ExecStop=$SCRIPT_PATH stop
+ExecStopPost=$SCRIPT_PATH notify "Bedrock server stopped."
 Restart=always
 RestartSec=10
 TimeoutStopSec=60
@@ -774,6 +789,9 @@ case "$cmd" in
         ;;
     restore)
         restore_server "${2:-}"
+        ;;
+    notify)
+        notify_command "${2:-}"
         ;;
     install-systemd)
         install_systemd

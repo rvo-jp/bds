@@ -97,13 +97,19 @@ CURL_MAX_TIME=1800
 
 ## Discord 通知
 
-Discord Webhook URL を設定すると、アップデート開始前と完了時に通知します。
+Discord Webhook URL を設定すると、通常のサーバー起動・停止、アップデート、バックアップ、復元のタイミングで通知します。
 
 ```text
 DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 ```
 
 Webhook URL は秘匿情報なので、README や Git には入れず `/etc/default/bds` にだけ保存してください。
+
+既に `install-systemd` 済みの環境で通知設定や通知対象が変わった場合は、systemd unit を再生成します。
+
+```bash
+sudo ./bds.sh install-systemd
+```
 
 ## 操作
 
