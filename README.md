@@ -203,9 +203,7 @@ ls -l /opt/bds/bedrock-server/.server.stdin
 
 ```text
 BACKUP_RETENTION_DAYS=14
-BACKUP_HOLD_SECONDS=30
-BACKUP_TAR_RETRY=3
-BACKUP_TAR_RETRY_DELAY=10
+BACKUP_HOLD_SECONDS=10
 BACKUP_MIN_FREE_MB=1024
 ```
 
@@ -218,9 +216,7 @@ sudo nano /etc/default/bds
 ```text
 BACKUP_DIR=/home/ubuntu/bds/backups
 BACKUP_RETENTION_DAYS=14
-BACKUP_HOLD_SECONDS=30
-BACKUP_TAR_RETRY=3
-BACKUP_TAR_RETRY_DELAY=10
+BACKUP_HOLD_SECONDS=10
 BACKUP_MIN_FREE_MB=1024
 ```
 
@@ -242,7 +238,7 @@ systemctl list-timers bds-backup.timer
 journalctl -u bds-backup.service -n 100 --no-pager
 ```
 
-よくある原因は、空き容量不足、`bedrock-server/worlds/` が存在しない、またはバックアップ作成中にワールドファイルが変化して `tar` が失敗したケースです。このスクリプトは `save hold` 後に待機し、`tar` 作成に失敗した場合は retry します。
+よくある原因は、空き容量不足、`bedrock-server/worlds/` が存在しない、または `tar.gz` の作成や検証に失敗したケースです。
 
 復元する場合は `restore` を使います。復元前にバックアップを検証し、`bds.service` が起動中なら停止します。既存の `worlds/` は削除せず、`worlds.pre-restore-YYYYMMDD-HHMMSS/` に退避します。復元前にサーバーが起動していた場合は、復元後に再起動します。
 

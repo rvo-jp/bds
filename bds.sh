@@ -17,9 +17,7 @@ NOTICE_SECONDS="${UPDATE_NOTICE_SECONDS:-300}"
 BACKUP_DIR="${BACKUP_DIR:-$BASE_DIR/backups}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
-BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-30}"
-BACKUP_TAR_RETRY="${BACKUP_TAR_RETRY:-3}"
-BACKUP_TAR_RETRY_DELAY="${BACKUP_TAR_RETRY_DELAY:-10}"
+BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 bds-installer}"
 
@@ -51,11 +49,7 @@ Environment:
   BACKUP_ON_CALENDAR
                    systemd backup schedule. Default: *-*-* 04:30:00
   BACKUP_HOLD_SECONDS
-                   Seconds to wait after save hold. Default: 30
-  BACKUP_TAR_RETRY
-                   tar retry count when backup creation fails. Default: 3
-  BACKUP_TAR_RETRY_DELAY
-                   Seconds between tar retries. Default: 10
+                   Seconds to wait after save hold. Default: 10
   BACKUP_MIN_FREE_MB
                    Minimum free space before backup. Default: 1024
   DISCORD_WEBHOOK_URL
@@ -408,30 +402,6 @@ archive_contains_worlds() {
     return 1
 }
 
-create_backup_archive() {
-    local archive="$1"
-    local attempt=1
-
-    validate_non_negative_integer "BACKUP_TAR_RETRY" "$BACKUP_TAR_RETRY"
-    validate_non_negative_integer "BACKUP_TAR_RETRY_DELAY" "$BACKUP_TAR_RETRY_DELAY"
-
-    while [[ "$attempt" -le "$BACKUP_TAR_RETRY" ]]; do
-        rm -f "$archive"
-        echo "Creating backup archive, attempt ${attempt}/${BACKUP_TAR_RETRY}: $archive"
-        if tar -czf "$archive" -C "$DEST" worlds; then
-            return 0
-        fi
-
-        echo "Backup archive creation failed, attempt ${attempt}/${BACKUP_TAR_RETRY}." >&2
-        attempt="$((attempt + 1))"
-        if [[ "$attempt" -le "$BACKUP_TAR_RETRY" ]]; then
-            sleep "$BACKUP_TAR_RETRY_DELAY"
-        fi
-    done
-
-    rm -f "$archive"
-    return 1
-}
 
 backup_server() {
     require_backup_deps
@@ -466,7 +436,7 @@ backup_server() {
         sleep "$BACKUP_HOLD_SECONDS"
     fi
 
-    if ! create_backup_archive "$archive"; then
+    if ! tar -czf "$archive" -C "$DEST" worlds; then
         status=1
     fi
 
