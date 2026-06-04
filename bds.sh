@@ -3,6 +3,7 @@
 set -euo pipefail
 
 APP_NAME="bds"
+SYSTEMD_DIR="/etc/systemd/system"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
 BASE_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 DEST="${BEDROCK_DIR:-$BASE_DIR/bedrock-server}"
@@ -78,9 +79,15 @@ need_cmd() {
     fi
 }
 
+need_cmds() {
+    local cmd
+    for cmd in "$@"; do
+        need_cmd "$cmd"
+    done
+}
+
 require_deps() {
-    need_cmd curl
-    need_cmd jq
+    need_cmds curl jq
     if ! command -v bsdtar >/dev/null 2>&1 && ! command -v unzip >/dev/null 2>&1; then
         echo "Missing command: bsdtar or unzip" >&2
         echo "Install dependencies on Ubuntu: sudo apt update && sudo apt install -y libarchive-tools unzip" >&2
@@ -89,30 +96,53 @@ require_deps() {
 }
 
 require_backup_deps() {
-    need_cmd tar
-    need_cmd find
-    need_cmd date
-    need_cmd df
-    need_cmd du
-    need_cmd awk
-    need_cmd grep
-    need_cmd curl
-    need_cmd jq
+    need_cmds tar find date df du awk grep curl jq mktemp
 }
 
 require_game8_post_deps() {
-    need_cmd curl
-    need_cmd sed
-    need_cmd head
-    need_cmd date
-    need_cmd mktemp
+    need_cmds curl sed head date mktemp
+}
+
+is_root() {
+    [[ "$(id -u)" -eq 0 ]]
 }
 
 systemctl_run() {
-    if [[ "$(id -u)" -eq 0 ]]; then
+    if is_root; then
         systemctl "$@"
     else
         sudo systemctl "$@"
+    fi
+}
+
+systemd_unit_path() {
+    printf '%s/%s\n' "$SYSTEMD_DIR" "$1"
+}
+
+systemctl_disable_now() {
+    local unit
+    for unit in "$@"; do
+        systemctl disable --now "$unit" 2>/dev/null || true
+    done
+}
+
+systemctl_enable_now() {
+    local unit
+    for unit in "$@"; do
+        systemctl enable --now "$unit"
+    done
+}
+
+remove_systemd_units() {
+    local unit
+    for unit in "$@"; do
+        rm -f "$(systemd_unit_path "$unit")"
+    done
+}
+
+chown_for_service() {
+    if is_root && [[ -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
+        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$@"
     fi
 }
 
@@ -577,9 +607,7 @@ backup_server() {
         -mtime +"$BACKUP_RETENTION_DAYS" \
         -delete
 
-    if [[ "$(id -u)" -eq 0 && -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
-        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$BACKUP_DIR"
-    fi
+    chown_for_service "$BACKUP_DIR"
 
     notify_discord "バックアップが完了しました: $(basename "$archive")"
     if server_accepts_commands; then
@@ -634,9 +662,7 @@ restore_server() {
         exit 1
     fi
 
-    if [[ "$(id -u)" -eq 0 && -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
-        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$DEST"
-    fi
+    chown_for_service "$DEST"
 
     notify_discord "バックアップの復元が完了しました: $(basename "$archive")"
     echo "Restore completed from: $archive"
@@ -678,9 +704,7 @@ auto_update() {
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
-    if [[ "$(id -u)" -eq 0 && -n "${SERVICE_USER:-}" && -n "${SERVICE_GROUP:-}" ]]; then
-        chown -R "$SERVICE_USER:$SERVICE_GROUP" "$BASE_DIR" "$DEST"
-    fi
+    chown_for_service "$BASE_DIR" "$DEST"
     echo "Updated Bedrock Dedicated Server: ${installed:-none} -> $version"
 
     if [[ "$service_was_active" -eq 1 ]]; then
@@ -692,7 +716,7 @@ auto_update() {
 }
 
 install_systemd() {
-    if [[ "$(id -u)" -ne 0 ]]; then
+    if ! is_root; then
         echo "Run as root: sudo $0 install-systemd" >&2
         exit 1
     fi
@@ -707,7 +731,7 @@ install_systemd() {
     install_server
     chown -R "$run_user:$run_group" "$BASE_DIR" "$DEST"
 
-    cat >/etc/systemd/system/$APP_NAME.service <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME.service")" <<EOF
 [Unit]
 Description=Minecraft Bedrock Dedicated Server
 After=network-online.target
@@ -732,7 +756,7 @@ TimeoutStopSec=60
 WantedBy=multi-user.target
 EOF
 
-    cat >/etc/systemd/system/$APP_NAME-update.service <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-update.service")" <<EOF
 [Unit]
 Description=Update Minecraft Bedrock Dedicated Server
 After=network-online.target
@@ -749,7 +773,7 @@ TimeoutStartSec=30min
 ExecStart=$SCRIPT_PATH auto-update
 EOF
 
-    cat >/etc/systemd/system/$APP_NAME-update.timer <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-update.timer")" <<EOF
 [Unit]
 Description=Periodic Minecraft Bedrock Dedicated Server update check
 
@@ -762,7 +786,7 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    cat >/etc/systemd/system/$APP_NAME-backup.service <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-backup.service")" <<EOF
 [Unit]
 Description=Backup Minecraft Bedrock Dedicated Server worlds
 After=$APP_NAME.service
@@ -778,7 +802,7 @@ TimeoutStartSec=2h
 ExecStart=$SCRIPT_PATH backup
 EOF
 
-    cat >/etc/systemd/system/$APP_NAME-backup.timer <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-backup.timer")" <<EOF
 [Unit]
 Description=Daily Minecraft Bedrock Dedicated Server backup
 
@@ -790,12 +814,12 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    systemctl disable --now "$APP_NAME-comment-check.timer" 2>/dev/null || true
-    rm -f \
-        "/etc/systemd/system/$APP_NAME-comment-check.service" \
-        "/etc/systemd/system/$APP_NAME-comment-check.timer"
+    systemctl_disable_now "$APP_NAME-comment-check.timer"
+    remove_systemd_units \
+        "$APP_NAME-comment-check.service" \
+        "$APP_NAME-comment-check.timer"
 
-    cat >/etc/systemd/system/$APP_NAME-game8-post.service <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-game8-post.service")" <<EOF
 [Unit]
 Description=Periodic Game8 POST
 After=network-online.target
@@ -810,7 +834,7 @@ TimeoutStartSec=2min
 ExecStart=$SCRIPT_PATH game8-post
 EOF
 
-    cat >/etc/systemd/system/$APP_NAME-game8-post.timer <<EOF
+    cat >"$(systemd_unit_path "$APP_NAME-game8-post.timer")" <<EOF
 [Unit]
 Description=Periodic Game8 POST
 
@@ -824,10 +848,11 @@ WantedBy=timers.target
 EOF
 
     systemctl daemon-reload
-    systemctl enable --now "$APP_NAME.service"
-    systemctl enable --now "$APP_NAME-update.timer"
-    systemctl enable --now "$APP_NAME-backup.timer"
-    systemctl enable --now "$APP_NAME-game8-post.timer"
+    systemctl_enable_now \
+        "$APP_NAME.service" \
+        "$APP_NAME-update.timer" \
+        "$APP_NAME-backup.timer" \
+        "$APP_NAME-game8-post.timer"
 
     echo "Installed and started:"
     echo "  systemctl status $APP_NAME.service"
@@ -837,26 +862,27 @@ EOF
 }
 
 uninstall_systemd() {
-    if [[ "$(id -u)" -ne 0 ]]; then
+    if ! is_root; then
         echo "Run as root: sudo $0 uninstall-systemd" >&2
         exit 1
     fi
 
-    systemctl disable --now "$APP_NAME-game8-post.timer" 2>/dev/null || true
-    systemctl disable --now "$APP_NAME-comment-check.timer" 2>/dev/null || true
-    systemctl disable --now "$APP_NAME-backup.timer" 2>/dev/null || true
-    systemctl disable --now "$APP_NAME-update.timer" 2>/dev/null || true
-    systemctl disable --now "$APP_NAME.service" 2>/dev/null || true
-    rm -f \
-        "/etc/systemd/system/$APP_NAME.service" \
-        "/etc/systemd/system/$APP_NAME-update.service" \
-        "/etc/systemd/system/$APP_NAME-update.timer" \
-        "/etc/systemd/system/$APP_NAME-backup.service" \
-        "/etc/systemd/system/$APP_NAME-backup.timer" \
-        "/etc/systemd/system/$APP_NAME-game8-post.service" \
-        "/etc/systemd/system/$APP_NAME-game8-post.timer" \
-        "/etc/systemd/system/$APP_NAME-comment-check.service" \
-        "/etc/systemd/system/$APP_NAME-comment-check.timer"
+    systemctl_disable_now \
+        "$APP_NAME-game8-post.timer" \
+        "$APP_NAME-comment-check.timer" \
+        "$APP_NAME-backup.timer" \
+        "$APP_NAME-update.timer" \
+        "$APP_NAME.service"
+    remove_systemd_units \
+        "$APP_NAME.service" \
+        "$APP_NAME-update.service" \
+        "$APP_NAME-update.timer" \
+        "$APP_NAME-backup.service" \
+        "$APP_NAME-backup.timer" \
+        "$APP_NAME-game8-post.service" \
+        "$APP_NAME-game8-post.timer" \
+        "$APP_NAME-comment-check.service" \
+        "$APP_NAME-comment-check.timer"
     systemctl daemon-reload
     echo "Removed systemd units."
 }
