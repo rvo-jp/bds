@@ -132,7 +132,7 @@ sudo mkdir -p /etc/bds
 sudo nano /etc/bds/game8-post-body.txt
 ```
 
-`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` または元の `check_comment_post.sh` と同じ `BODY` を使います。`GAME8_POST_NAME` は未指定なら実行時刻を含む値を自動生成します。元の `NAME` も利用できますが、両方ある場合は `GAME8_POST_NAME` を優先します。
+`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` または元の `check_comment_post.sh` と同じ `BODY` を使います。どれも未指定なら本文は空文字列です。`GAME8_POST_NAME` は元の `NAME` も利用できますが、どちらも未指定なら空文字列です。両方ある場合は `GAME8_POST_NAME` を優先します。
 
 投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の Environment からは変更できないため、誤設定で投稿先が変わることはありません。
 

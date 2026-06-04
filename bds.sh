@@ -63,7 +63,7 @@ Environment:
   GAME8_POST_INTERVAL
                    systemd timer interval for Game8 POST. Default: 8h
   GAME8_POST_NAME
-                   Post name. NAME is also supported. Default: generated per run.
+                   Post name. NAME is also supported. Default: empty.
   GAME8_POST_BODY_FILE
                    File path for post body. Recommended for multiline text.
   GAME8_POST_BODY
@@ -219,8 +219,6 @@ game8_post_enabled() {
 }
 
 game8_post_body() {
-    local timestamp="$1"
-
     if [[ -n "${GAME8_POST_BODY_FILE:-}" ]]; then
         if [[ ! -f "$GAME8_POST_BODY_FILE" ]]; then
             echo "Game8 POST failed: body file not found: $GAME8_POST_BODY_FILE" >&2
@@ -230,7 +228,7 @@ game8_post_body() {
         return 0
     fi
 
-    printf '%s' "${GAME8_POST_BODY:-${BODY:-backend receive check body ${timestamp}}}"
+    printf '%s' "${GAME8_POST_BODY:-${BODY:-}}"
 }
 
 game8_post() {
@@ -241,12 +239,11 @@ game8_post() {
 
     require_game8_post_deps
 
-    local page_url endpoint csrf_token timestamp name body http_status
+    local page_url endpoint csrf_token name body http_status
     page_url="${GAME8_POST_BASE_URL}/${GAME8_POST_ARCHIVE_ID}"
     endpoint="${GAME8_POST_BASE_URL}/api/archive_comments"
-    timestamp="$(date +%Y%m%d%H%M%S)"
-    name="${GAME8_POST_NAME:-${NAME:-backend-receive-check-${timestamp}}}"
-    body="$(game8_post_body "$timestamp")"
+    name="${GAME8_POST_NAME:-${NAME:-}}"
+    body="$(game8_post_body)"
 
     csrf_token="$(
         curl \
