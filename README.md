@@ -75,7 +75,7 @@ UPDATE_NOTICE_SECONDS=300
 BACKUP_RETENTION_DAYS=14
 GAME8_POST_ENABLED=0
 GAME8_POST_NAME=backend-receive-check
-GAME8_POST_BODY=backend receive check body
+GAME8_POST_BODY_FILE=/etc/bds/game8-post-body.txt
 ```
 
 設定変更後は systemd を読み直します。
@@ -122,10 +122,17 @@ sudo ./bds.sh install-systemd
 ```text
 GAME8_POST_ENABLED=1
 GAME8_POST_NAME=backend-receive-check
-GAME8_POST_BODY=backend receive check body
+GAME8_POST_BODY_FILE=/etc/bds/game8-post-body.txt
 ```
 
-未指定の場合、`GAME8_POST_NAME` と `GAME8_POST_BODY` は実行時刻を含む値を自動生成します。元の `check_comment_post.sh` と同じ `NAME` / `BODY` も利用できますが、両方ある場合は `GAME8_POST_NAME` / `GAME8_POST_BODY` を優先します。
+本文は複数行になることが多いため、`GAME8_POST_BODY_FILE` で別ファイルに置く方針です。
+
+```bash
+sudo mkdir -p /etc/bds
+sudo nano /etc/bds/game8-post-body.txt
+```
+
+`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` または元の `check_comment_post.sh` と同じ `BODY` を使います。`GAME8_POST_NAME` は未指定なら実行時刻を含む値を自動生成します。元の `NAME` も利用できますが、両方ある場合は `GAME8_POST_NAME` を優先します。
 
 投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の Environment からは変更できないため、誤設定で投稿先が変わることはありません。
 
@@ -135,7 +142,7 @@ GAME8_POST_BODY=backend receive check body
 sudo GAME8_POST_INTERVAL=12h ./bds.sh install-systemd
 ```
 
-成功や失敗は journal にだけ記録します。ワールド内の `say` や Discord には通知しません。
+成功や失敗は journal にだけ簡潔に記録します。レスポンス本文の詳細分析は行わず、ワールド内の `say` や Discord にも通知しません。
 
 ```bash
 journalctl -u bds-game8-post.service -n 100 --no-pager

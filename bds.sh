@@ -64,8 +64,10 @@ Environment:
                    systemd timer interval for Game8 POST. Default: 8h
   GAME8_POST_NAME
                    Post name. NAME is also supported. Default: generated per run.
+  GAME8_POST_BODY_FILE
+                   File path for post body. Recommended for multiline text.
   GAME8_POST_BODY
-                   Post body. BODY is also supported. Default: generated per run.
+                   Post body. BODY is also supported. Used when BODY_FILE is unset.
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -100,7 +102,7 @@ require_backup_deps() {
 }
 
 require_game8_post_deps() {
-    need_cmds curl sed head date mktemp
+    need_cmds curl sed head date
 }
 
 is_root() {
@@ -216,6 +218,21 @@ game8_post_enabled() {
     esac
 }
 
+game8_post_body() {
+    local timestamp="$1"
+
+    if [[ -n "${GAME8_POST_BODY_FILE:-}" ]]; then
+        if [[ ! -f "$GAME8_POST_BODY_FILE" ]]; then
+            echo "Game8 POST failed: body file not found: $GAME8_POST_BODY_FILE" >&2
+            exit 1
+        fi
+        cat "$GAME8_POST_BODY_FILE"
+        return 0
+    fi
+
+    printf '%s' "${GAME8_POST_BODY:-${BODY:-backend receive check body ${timestamp}}}"
+}
+
 game8_post() {
     if ! game8_post_enabled; then
         echo "Game8 POST is disabled."
@@ -224,9 +241,12 @@ game8_post() {
 
     require_game8_post_deps
 
-    local page_url endpoint csrf_token timestamp name body response_file http_status
+    local page_url endpoint csrf_token timestamp name body http_status
     page_url="${GAME8_POST_BASE_URL}/${GAME8_POST_ARCHIVE_ID}"
     endpoint="${GAME8_POST_BASE_URL}/api/archive_comments"
+    timestamp="$(date +%Y%m%d%H%M%S)"
+    name="${GAME8_POST_NAME:-${NAME:-backend-receive-check-${timestamp}}}"
+    body="$(game8_post_body "$timestamp")"
 
     csrf_token="$(
         curl \
@@ -247,13 +267,6 @@ game8_post() {
         exit 1
     fi
 
-    timestamp="$(date +%Y%m%d%H%M%S)"
-    name="${GAME8_POST_NAME:-${NAME:-backend-receive-check-${timestamp}}}"
-    body="${GAME8_POST_BODY:-${BODY:-backend receive check body ${timestamp}}}"
-
-    response_file="$(mktemp)"
-    trap 'rm -f "$response_file"' EXIT
-
     http_status="$(
         curl \
             --silent \
@@ -269,7 +282,7 @@ game8_post() {
             --form "archive_comment[name]=$name" \
             --form "archive_comment[body]=$body" \
             --write-out "%{http_code}" \
-            --output "$response_file" \
+            --output /dev/null \
             "$endpoint"
     )"
 
@@ -279,13 +292,10 @@ game8_post() {
             ;;
         *)
             echo "Game8 POST failed: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name" >&2
-            sed -n '1,20p' "$response_file" >&2
             exit 1
             ;;
     esac
 
-    rm -f "$response_file"
-    trap - EXIT
 }
 
 warn_before_update() {
