@@ -9,7 +9,7 @@ BASE_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CONFIG_FILE="${BDS_CONFIG:-$BASE_DIR/bds.conf}"
 
 if [[ -f "$CONFIG_FILE" ]]; then
-    # bds.conf is a shell config file so multiline values can use heredocs.
+    # bds.conf は shell 設定ファイルとして読み込みます。heredoc による複数行設定も使えます。
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
 fi
@@ -36,55 +36,55 @@ CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) Ap
 
 usage() {
     cat <<EOF
-Usage: $0 <command>
+使い方: $0 <コマンド>
 
-Commands:
-  install          Download/update Bedrock Dedicated Server files.
-  start            Start bedrock_server in the foreground.
-  stop             Send "stop" to a running server started by this script.
-  auto-update      Check for updates. If updated, restart the systemd service.
-  backup           Create a worlds backup without stopping the server.
+コマンド:
+  install          Bedrock Dedicated Server をダウンロードまたは更新します。
+  start            bedrock_server をフォアグラウンドで起動します。
+  stop             このスクリプトで起動したサーバーへ stop を送信します。
+  auto-update      更新を確認し、必要なら systemd service を再起動します。
+  backup           サーバーを停止せずに worlds をバックアップします。
   restore <archive>
-                   Restore worlds from a backup archive.
-  game8-post       Periodically post to Game8 when enabled.
-  notify <message> Send a Discord notification when DISCORD_WEBHOOK_URL is set.
-  install-systemd  Install systemd service and timer for 24/7 operation.
+                   バックアップアーカイブから worlds を復元します。
+  game8-post       有効化されている場合、Game8 へ定期 POST します。
+  notify <message> DISCORD_WEBHOOK_URL が設定されている場合、Discord へ通知します。
+  install-systemd  24時間稼働用の systemd service と timer をインストールします。
   uninstall-systemd
-                   Remove installed systemd service and timer.
+                   インストール済みの systemd service と timer を削除します。
 
-Configuration:
-  bds.conf         Optional shell config file. Default: $BASE_DIR/bds.conf
-  BDS_CONFIG       Override config file path.
-  BEDROCK_DIR      Install directory. Default: $BASE_DIR/bedrock-server
-  CHECK_INTERVAL   systemd timer interval. Default: 6h
+設定:
+  bds.conf         任意の shell 設定ファイル。既定: $BASE_DIR/bds.conf
+  BDS_CONFIG       設定ファイルのパスを上書きします。
+  BEDROCK_DIR      インストール先ディレクトリ。既定: $BASE_DIR/bedrock-server
+  CHECK_INTERVAL   更新確認 timer の間隔。既定: 6h
   UPDATE_NOTICE_SECONDS
-                   Seconds to warn players before update restart. Default: 300
-  BACKUP_DIR       Backup directory. Default: $BASE_DIR/backups
+                   更新前にプレイヤーへ警告して待つ秒数。既定: 300
+  BACKUP_DIR       バックアップ先ディレクトリ。既定: $BASE_DIR/backups
   BACKUP_RETENTION_DAYS
-                   Days to keep backups. Default: 14
+                   バックアップ保持日数。既定: 14
   BACKUP_ON_CALENDAR
-                   systemd backup schedule. Default: *-*-* 04:30:00
+                   systemd のバックアップ実行時刻。既定: *-*-* 04:30:00
   BACKUP_HOLD_SECONDS
-                   Seconds to wait after save hold. Default: 10
+                   save hold 後に待機する秒数。既定: 10
   BACKUP_MIN_FREE_MB
-                   Minimum free space before backup. Default: 1024
+                   バックアップ前に確保する最低空き容量 MB。既定: 1024
   GAME8_POST_ENABLED
-                   Enable periodic Game8 POST. Set to 1 to enable. Default: 0
+                   Game8 POST を有効化します。1 で有効。既定: 0
   GAME8_POST_INTERVAL
-                   systemd timer interval for Game8 POST. Default: 8h
+                   Game8 POST timer の間隔。既定: 8h
   GAME8_POST_NAME
-                   Post name. Default: empty.
+                   投稿者名。既定: 空文字列
   GAME8_POST_BODY
-                   Post body. Multiline values are supported in bds.conf. Default: empty.
+                   投稿本文。bds.conf では複数行を設定できます。既定: 空文字列
   DISCORD_WEBHOOK_URL
-                   Optional Discord webhook URL for update notifications.
+                   Discord 通知用 Webhook URL。未設定なら通知しません。
 EOF
 }
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
-        echo "Missing command: $1" >&2
-        echo "Install dependencies on Ubuntu: sudo apt update && sudo apt install -y curl jq libarchive-tools unzip" >&2
+        echo "必要なコマンドが見つかりません: $1" >&2
+        echo "Ubuntu では依存パッケージを入れてください: sudo apt update && sudo apt install -y curl jq libarchive-tools unzip" >&2
         exit 1
     fi
 }
@@ -99,8 +99,8 @@ need_cmds() {
 require_deps() {
     need_cmds curl jq
     if ! command -v bsdtar >/dev/null 2>&1 && ! command -v unzip >/dev/null 2>&1; then
-        echo "Missing command: bsdtar or unzip" >&2
-        echo "Install dependencies on Ubuntu: sudo apt update && sudo apt install -y libarchive-tools unzip" >&2
+        echo "必要なコマンドが見つかりません: bsdtar または unzip" >&2
+        echo "Ubuntu では依存パッケージを入れてください: sudo apt update && sudo apt install -y libarchive-tools unzip" >&2
         exit 1
     fi
 }
@@ -201,13 +201,13 @@ notify_discord() {
         -d "$payload" \
         "$DISCORD_WEBHOOK_URL" \
         >/dev/null \
-        || echo "Discord notification failed." >&2
+        || echo "Discord 通知に失敗しました。" >&2
 }
 
 notify_command() {
     local message="${1:-}"
     if [[ -z "$message" ]]; then
-        echo "Usage: $0 notify <message>" >&2
+        echo "使い方: $0 notify <message>" >&2
         exit 1
     fi
 
@@ -228,7 +228,7 @@ game8_post_enabled() {
 
 game8_post() {
     if ! game8_post_enabled; then
-        echo "Game8 POST is disabled."
+        echo "Game8 POST は無効です。"
         return 0
     fi
 
@@ -263,7 +263,7 @@ game8_post() {
     )"
 
     if [[ -z "$csrf_token" ]]; then
-        echo "Game8 POST failed: csrf-token を取得できませんでした: $page_url" >&2
+        echo "Game8 POST に失敗しました: csrf-token を取得できませんでした: $page_url" >&2
         exit 1
     fi
 
@@ -296,10 +296,10 @@ game8_post() {
 
     case "$http_status" in
         200|201|204)
-            echo "Game8 POST succeeded: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name"
+            echo "Game8 POST が完了しました: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name"
             ;;
         *)
-            echo "Game8 POST failed: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name" >&2
+            echo "Game8 POST に失敗しました: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name" >&2
             exit 1
             ;;
     esac
@@ -313,7 +313,7 @@ warn_before_update() {
 
     case "$seconds" in
         ''|*[!0-9]*)
-            echo "UPDATE_NOTICE_SECONDS must be a non-negative integer: $seconds" >&2
+            echo "UPDATE_NOTICE_SECONDS は0以上の整数で指定してください: $seconds" >&2
             exit 1
             ;;
     esac
@@ -347,17 +347,17 @@ download_url() {
             curl_json "$api_url" \
                 | jq -r '.result.links[] | select(.downloadType == "serverBedrockLinux") | .downloadUrl'
         )" || {
-            echo "Download links API failed: $api_url" >&2
+            echo "ダウンロードリンク API の取得に失敗しました: $api_url" >&2
             continue
         }
 
         if [[ -n "$url" && "$url" != "null" ]]; then
-            echo "Using download links API: $api_url" >&2
+            echo "ダウンロードリンク API を使用します: $api_url" >&2
             printf '%s\n' "$url"
             return 0
         fi
 
-        echo "Bedrock Linux server download URL not found in: $api_url" >&2
+        echo "Bedrock Linux サーバーのダウンロード URL が見つかりません: $api_url" >&2
     done
 
     return 1
@@ -380,7 +380,7 @@ extract_server() {
     tmp_zip="$(mktemp)"
     trap "rm -f '$tmp_zip'; trap - RETURN" RETURN
 
-    echo "Downloading: $url"
+    echo "ダウンロード中: $url"
     curl_download "$url" "$tmp_zip"
 
     mkdir -p "$DEST"
@@ -419,7 +419,7 @@ install_server() {
     local url version installed
     url="$(download_url)"
     if [[ -z "$url" || "$url" == "null" ]]; then
-        echo "Bedrock Linux server download URL not found." >&2
+        echo "Bedrock Linux サーバーのダウンロード URL が見つかりません。" >&2
         exit 1
     fi
 
@@ -427,19 +427,19 @@ install_server() {
     installed="$(current_version || true)"
 
     if [[ "$installed" == "$version" && -x "$DEST/bedrock_server" ]]; then
-        echo "Already up to date: $version"
+        echo "すでに最新版です: $version"
         return 0
     fi
 
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
-    echo "Installed Bedrock Dedicated Server: $version"
+    echo "Bedrock Dedicated Server をインストールしました: $version"
 }
 
 start_server() {
     if [[ ! -x "$DEST/bedrock_server" ]]; then
-        echo "Server binary not found. Run: $0 install" >&2
+        echo "サーバー実行ファイルが見つかりません。先に実行してください: $0 install" >&2
         exit 1
     fi
 
@@ -456,7 +456,7 @@ start_server() {
 
 stop_server() {
     if [[ ! -p "$STDIN_FIFO" ]]; then
-        echo "Server input pipe not found: $STDIN_FIFO" >&2
+        echo "サーバー入力 FIFO が見つかりません: $STDIN_FIFO" >&2
         exit 1
     fi
 
@@ -469,7 +469,7 @@ validate_non_negative_integer() {
 
     case "$value" in
         ''|*[!0-9]*)
-            echo "$name must be a non-negative integer: $value" >&2
+            echo "$name は0以上の整数で指定してください: $value" >&2
             exit 1
             ;;
     esac
@@ -519,18 +519,18 @@ validate_backup_archive() {
     local validation_status=0
 
     if [[ ! -f "$archive" ]]; then
-        echo "Backup archive not found: $archive" >&2
+        echo "バックアップアーカイブが見つかりません: $archive" >&2
         exit 1
     fi
 
     archive_contains_worlds "$archive" || validation_status=$?
     if [[ "$validation_status" -eq 2 ]]; then
-        echo "Backup archive is not readable: $archive" >&2
+        echo "バックアップアーカイブを読み取れません: $archive" >&2
         exit 1
     fi
 
     if [[ "$validation_status" -ne 0 ]]; then
-        echo "Backup archive does not contain worlds/: $archive" >&2
+        echo "バックアップアーカイブに worlds/ が含まれていません: $archive" >&2
         exit 1
     fi
 }
@@ -554,7 +554,6 @@ archive_contains_worlds() {
     return 1
 }
 
-
 backup_server() {
     require_backup_deps
     validate_non_negative_integer "BACKUP_RETENTION_DAYS" "$BACKUP_RETENTION_DAYS"
@@ -575,7 +574,7 @@ backup_server() {
     timestamp="$(date +%Y%m%d-%H%M%S)"
     archive="$BACKUP_DIR/bds-worlds-$timestamp.tar.gz"
 
-    echo "Creating backup: $archive"
+    echo "バックアップを作成します: $archive"
     notify_discord "バックアップを開始します。"
 
     local resume_trap_set=0
@@ -584,7 +583,7 @@ backup_server() {
         send_server_command "save hold"
         trap 'send_server_command "save resume"' INT TERM EXIT
         resume_trap_set=1
-        echo "Waiting ${BACKUP_HOLD_SECONDS}s after save hold before archiving."
+        echo "save hold 後、アーカイブ作成前に ${BACKUP_HOLD_SECONDS} 秒待機します。"
         sleep "$BACKUP_HOLD_SECONDS"
     fi
 
@@ -603,7 +602,7 @@ backup_server() {
         if server_accepts_commands; then
             send_server_command "say バックアップに失敗しました。"
         fi
-        echo "Backup failed." >&2
+        echo "バックアップに失敗しました。" >&2
         exit 1
     fi
 
@@ -615,7 +614,7 @@ backup_server() {
         if server_accepts_commands; then
             send_server_command "say バックアップ検証に失敗しました。"
         fi
-        echo "Backup verification failed." >&2
+        echo "バックアップ検証に失敗しました。" >&2
         exit 1
     fi
 
@@ -631,7 +630,7 @@ backup_server() {
     if server_accepts_commands; then
         send_server_command "say バックアップが完了しました。"
     fi
-    echo "Backup completed: $archive"
+    echo "バックアップが完了しました: $archive"
 }
 
 restore_server() {
@@ -639,7 +638,7 @@ restore_server() {
 
     local archive="${1:-}"
     if [[ -z "$archive" ]]; then
-        echo "Usage: $0 restore <backup-archive>" >&2
+        echo "使い方: $0 restore <backup-archive>" >&2
         exit 1
     fi
 
@@ -660,20 +659,20 @@ restore_server() {
 
     if [[ -e "$current_worlds" ]]; then
         mv "$current_worlds" "$restore_backup_dir"
-        echo "Moved existing worlds to: $restore_backup_dir"
+        echo "既存の worlds を退避しました: $restore_backup_dir"
     fi
 
     if ! tar -xzf "$archive" -C "$DEST"; then
-        echo "Restore failed while extracting: $archive" >&2
+        echo "復元に失敗しました。展開できませんでした: $archive" >&2
         if [[ -d "$restore_backup_dir" && ! -e "$current_worlds" ]]; then
             mv "$restore_backup_dir" "$current_worlds"
-            echo "Restored previous worlds from: $restore_backup_dir"
+            echo "退避済み worlds を戻しました: $restore_backup_dir"
         fi
         exit 1
     fi
 
     if [[ ! -d "$current_worlds" ]]; then
-        echo "Restore failed: worlds/ was not extracted." >&2
+        echo "復元に失敗しました: worlds/ が展開されませんでした。" >&2
         if [[ -d "$restore_backup_dir" && ! -e "$current_worlds" ]]; then
             mv "$restore_backup_dir" "$current_worlds"
         fi
@@ -683,9 +682,9 @@ restore_server() {
     chown_for_service "$DEST"
 
     notify_discord "バックアップの復元が完了しました: $(basename "$archive")"
-    echo "Restore completed from: $archive"
+    echo "復元が完了しました: $archive"
     if [[ -d "$restore_backup_dir" ]]; then
-        echo "Previous worlds kept at: $restore_backup_dir"
+        echo "以前の worlds はここに残しています: $restore_backup_dir"
     fi
 
     if [[ "$service_was_active" -eq 1 ]]; then
@@ -700,7 +699,7 @@ auto_update() {
     local url version installed service_was_active=0
     url="$(download_url)"
     if [[ -z "$url" || "$url" == "null" ]]; then
-        echo "Bedrock Linux server download URL not found." >&2
+        echo "Bedrock Linux サーバーのダウンロード URL が見つかりません。" >&2
         exit 1
     fi
 
@@ -708,7 +707,7 @@ auto_update() {
     installed="$(current_version || true)"
 
     if [[ "$installed" == "$version" && -x "$DEST/bedrock_server" ]]; then
-        echo "No update: $version"
+        echo "更新はありません: $version"
         return 0
     fi
 
@@ -723,7 +722,7 @@ auto_update() {
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
     chown_for_service "$BASE_DIR" "$DEST"
-    echo "Updated Bedrock Dedicated Server: ${installed:-none} -> $version"
+    echo "Bedrock Dedicated Server を更新しました: ${installed:-none} -> $version"
 
     if [[ "$service_was_active" -eq 1 ]]; then
         systemctl_run start "$APP_NAME.service"
@@ -735,7 +734,7 @@ auto_update() {
 
 install_systemd() {
     if ! is_root; then
-        echo "Run as root: sudo $0 install-systemd" >&2
+        echo "root 権限で実行してください: sudo $0 install-systemd" >&2
         exit 1
     fi
 
@@ -776,7 +775,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-update.service")" <<EOF
 [Unit]
-Description=Update Minecraft Bedrock Dedicated Server
+Description=Minecraft Bedrock Dedicated Server 更新
 After=network-online.target
 Wants=network-online.target
 
@@ -793,7 +792,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-update.timer")" <<EOF
 [Unit]
-Description=Periodic Minecraft Bedrock Dedicated Server update check
+Description=Minecraft Bedrock Dedicated Server 定期更新確認
 
 [Timer]
 OnBootSec=10min
@@ -806,7 +805,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-backup.service")" <<EOF
 [Unit]
-Description=Backup Minecraft Bedrock Dedicated Server worlds
+Description=Minecraft Bedrock Dedicated Server ワールドバックアップ
 After=$APP_NAME.service
 
 [Service]
@@ -822,7 +821,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-backup.timer")" <<EOF
 [Unit]
-Description=Daily Minecraft Bedrock Dedicated Server backup
+Description=Minecraft Bedrock Dedicated Server 日次バックアップ
 
 [Timer]
 OnCalendar=$backup_on_calendar
@@ -839,7 +838,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-game8-post.service")" <<EOF
 [Unit]
-Description=Periodic Game8 POST
+Description=Game8 POST 定期実行
 After=network-online.target
 Wants=network-online.target
 
@@ -854,7 +853,7 @@ EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-game8-post.timer")" <<EOF
 [Unit]
-Description=Periodic Game8 POST
+Description=Game8 POST 定期実行
 
 [Timer]
 OnBootSec=15min
@@ -872,7 +871,7 @@ EOF
         "$APP_NAME-backup.timer" \
         "$APP_NAME-game8-post.timer"
 
-    echo "Installed and started:"
+    echo "インストールして起動しました:"
     echo "  systemctl status $APP_NAME.service"
     echo "  systemctl status $APP_NAME-update.timer"
     echo "  systemctl status $APP_NAME-backup.timer"
@@ -881,7 +880,7 @@ EOF
 
 uninstall_systemd() {
     if ! is_root; then
-        echo "Run as root: sudo $0 uninstall-systemd" >&2
+        echo "root 権限で実行してください: sudo $0 uninstall-systemd" >&2
         exit 1
     fi
 
@@ -902,7 +901,7 @@ uninstall_systemd() {
         "$APP_NAME-comment-check.service" \
         "$APP_NAME-comment-check.timer"
     systemctl daemon-reload
-    echo "Removed systemd units."
+    echo "systemd unit を削除しました。"
 }
 
 cmd="${1:-}"
@@ -941,7 +940,7 @@ case "$cmd" in
         usage
         ;;
     *)
-        echo "Unknown command: $cmd" >&2
+        echo "不明なコマンドです: $cmd" >&2
         usage >&2
         exit 1
         ;;
