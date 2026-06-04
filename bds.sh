@@ -19,6 +19,10 @@ BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
+GAME8_COMMENT_CHECK_ENABLED="${GAME8_COMMENT_CHECK_ENABLED:-0}"
+GAME8_COMMENT_CHECK_INTERVAL="${GAME8_COMMENT_CHECK_INTERVAL:-8h}"
+GAME8_COMMENT_BASE_URL="${GAME8_COMMENT_BASE_URL:-https://game8.jp}"
+GAME8_COMMENT_ARCHIVE_ID="${GAME8_COMMENT_ARCHIVE_ID:-216448}"
 CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 bds-installer}"
 
 usage() {
@@ -33,6 +37,7 @@ Commands:
   backup           Create a worlds backup without stopping the server.
   restore <archive>
                    Restore worlds from a backup archive.
+  comment-check    POST a periodic Game8 comment check when enabled.
   notify <message> Send a Discord notification when DISCORD_WEBHOOK_URL is set.
   install-systemd  Install systemd service and timer for 24/7 operation.
   uninstall-systemd
@@ -52,6 +57,18 @@ Environment:
                    Seconds to wait after save hold. Default: 10
   BACKUP_MIN_FREE_MB
                    Minimum free space before backup. Default: 1024
+  GAME8_COMMENT_CHECK_ENABLED
+                   Enable periodic Game8 comment POST. Set to 1 to enable. Default: 0
+  GAME8_COMMENT_CHECK_INTERVAL
+                   systemd timer interval for Game8 comment POST. Default: 8h
+  GAME8_COMMENT_NAME
+                   Comment name. NAME is also supported. Default: generated per run.
+  GAME8_COMMENT_BODY
+                   Comment body. BODY is also supported. Default: generated per run.
+  GAME8_COMMENT_BASE_URL
+                   Game8 base URL. Default: https://game8.jp
+  GAME8_COMMENT_ARCHIVE_ID
+                   Game8 archive ID. Default: 216448
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -85,6 +102,14 @@ require_backup_deps() {
     need_cmd grep
     need_cmd curl
     need_cmd jq
+}
+
+require_comment_check_deps() {
+    need_cmd curl
+    need_cmd sed
+    need_cmd head
+    need_cmd date
+    need_cmd mktemp
 }
 
 systemctl_run() {
@@ -152,6 +177,89 @@ notify_command() {
 
     notify_discord "$message"
     return 0
+}
+
+comment_check_enabled() {
+    case "$GAME8_COMMENT_CHECK_ENABLED" in
+        1|true|TRUE|True|yes|YES|Yes|on|ON|On|enabled|ENABLED|Enabled)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+game8_comment_check() {
+    if ! comment_check_enabled; then
+        echo "Game8 comment check is disabled."
+        return 0
+    fi
+
+    require_comment_check_deps
+
+    local page_url endpoint csrf_token timestamp name body response_file http_status
+    page_url="${GAME8_COMMENT_BASE_URL%/}/${GAME8_COMMENT_ARCHIVE_ID}"
+    endpoint="${GAME8_COMMENT_BASE_URL%/}/api/archive_comments"
+
+    csrf_token="$(
+        curl \
+            --fail \
+            --silent \
+            --show-error \
+            --location \
+            --user-agent "$CURL_USER_AGENT" \
+            --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8" \
+            --header "Accept-Language: ja,en-US;q=0.9,en;q=0.8" \
+            "$page_url" \
+            | sed -nE 's/.*<meta name="csrf-token" content="([^"]+)".*/\1/p' \
+            | head -n 1
+    )"
+
+    if [[ -z "$csrf_token" ]]; then
+        echo "Game8 comment check failed: csrf-token を取得できませんでした: $page_url" >&2
+        exit 1
+    fi
+
+    timestamp="$(date +%Y%m%d%H%M%S)"
+    name="${GAME8_COMMENT_NAME:-${NAME:-backend-receive-check-${timestamp}}}"
+    body="${GAME8_COMMENT_BODY:-${BODY:-backend receive check body ${timestamp}}}"
+
+    response_file="$(mktemp)"
+    trap 'rm -f "$response_file"' EXIT
+
+    http_status="$(
+        curl \
+            --silent \
+            --show-error \
+            --location \
+            --request POST \
+            --user-agent "$CURL_USER_AGENT" \
+            --header "Accept: application/json" \
+            --header "Accept-Language: ja,en-US;q=0.9,en;q=0.8" \
+            --header "X-CSRF-Token: $csrf_token" \
+            --referer "$page_url" \
+            --form "archive_comment[archive_id]=$GAME8_COMMENT_ARCHIVE_ID" \
+            --form "archive_comment[name]=$name" \
+            --form "archive_comment[body]=$body" \
+            --write-out "%{http_code}" \
+            --output "$response_file" \
+            "$endpoint"
+    )"
+
+    case "$http_status" in
+        200|201|204)
+            echo "Game8 comment check succeeded: HTTP $http_status archive_id=$GAME8_COMMENT_ARCHIVE_ID name=$name"
+            ;;
+        *)
+            echo "Game8 comment check failed: HTTP $http_status archive_id=$GAME8_COMMENT_ARCHIVE_ID name=$name" >&2
+            sed -n '1,20p' "$response_file" >&2
+            exit 1
+            ;;
+    esac
+
+    rm -f "$response_file"
+    trap - EXIT
 }
 
 warn_before_update() {
@@ -593,11 +701,12 @@ install_systemd() {
         exit 1
     fi
 
-    local run_user run_group interval backup_on_calendar
+    local run_user run_group interval backup_on_calendar comment_check_interval
     run_user="${SUDO_USER:-$(id -un)}"
     run_group="$(id -gn "$run_user")"
     interval="${CHECK_INTERVAL:-6h}"
     backup_on_calendar="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
+    comment_check_interval="${GAME8_COMMENT_CHECK_INTERVAL:-8h}"
 
     install_server
     chown -R "$run_user:$run_group" "$BASE_DIR" "$DEST"
@@ -685,15 +794,45 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
+    cat >/etc/systemd/system/$APP_NAME-comment-check.service <<EOF
+[Unit]
+Description=Periodic Game8 comment POST check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/$APP_NAME
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2min
+ExecStart=$SCRIPT_PATH comment-check
+EOF
+
+    cat >/etc/systemd/system/$APP_NAME-comment-check.timer <<EOF
+[Unit]
+Description=Periodic Game8 comment POST check
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=$comment_check_interval
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
     systemctl daemon-reload
     systemctl enable --now "$APP_NAME.service"
     systemctl enable --now "$APP_NAME-update.timer"
     systemctl enable --now "$APP_NAME-backup.timer"
+    systemctl enable --now "$APP_NAME-comment-check.timer"
 
     echo "Installed and started:"
     echo "  systemctl status $APP_NAME.service"
     echo "  systemctl status $APP_NAME-update.timer"
     echo "  systemctl status $APP_NAME-backup.timer"
+    echo "  systemctl status $APP_NAME-comment-check.timer"
 }
 
 uninstall_systemd() {
@@ -702,6 +841,7 @@ uninstall_systemd() {
         exit 1
     fi
 
+    systemctl disable --now "$APP_NAME-comment-check.timer" 2>/dev/null || true
     systemctl disable --now "$APP_NAME-backup.timer" 2>/dev/null || true
     systemctl disable --now "$APP_NAME-update.timer" 2>/dev/null || true
     systemctl disable --now "$APP_NAME.service" 2>/dev/null || true
@@ -710,7 +850,9 @@ uninstall_systemd() {
         "/etc/systemd/system/$APP_NAME-update.service" \
         "/etc/systemd/system/$APP_NAME-update.timer" \
         "/etc/systemd/system/$APP_NAME-backup.service" \
-        "/etc/systemd/system/$APP_NAME-backup.timer"
+        "/etc/systemd/system/$APP_NAME-backup.timer" \
+        "/etc/systemd/system/$APP_NAME-comment-check.service" \
+        "/etc/systemd/system/$APP_NAME-comment-check.timer"
     systemctl daemon-reload
     echo "Removed systemd units."
 }
@@ -731,6 +873,9 @@ case "$cmd" in
         ;;
     backup)
         backup_server
+        ;;
+    comment-check)
+        game8_comment_check
         ;;
     restore)
         restore_server "${2:-}"

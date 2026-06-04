@@ -56,6 +56,7 @@ sudo ./bds.sh install-systemd
 - 更新処理は低 CPU/I/O 優先度で実行され、サーバー本体への影響を抑制
 - 更新 service は警告待機とダウンロード時間を見込んで最大 30 分まで実行可能
 - `bds-backup.timer` が 1 日 1 回、ワールドをバックアップ
+- `bds-comment-check.timer` が 8 時間ごとに Game8 コメント POST 確認を実行可能
 
 更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。Minecraft 側へ性能を寄せるため、通常は 6 時間以上を推奨します。
 
@@ -72,6 +73,9 @@ sudo nano /etc/default/bds
 ```text
 UPDATE_NOTICE_SECONDS=300
 BACKUP_RETENTION_DAYS=14
+GAME8_COMMENT_CHECK_ENABLED=0
+GAME8_COMMENT_NAME=backend-receive-check
+GAME8_COMMENT_BODY=backend receive check body
 ```
 
 設定変更後は systemd を読み直します。
@@ -109,6 +113,42 @@ Webhook URL は秘匿情報なので、README や Git には入れず `/etc/defa
 
 ```bash
 sudo ./bds.sh install-systemd
+```
+
+## Game8 コメント POST 確認
+
+`check_comment_post.sh` と同等の curl 処理を `bds.sh comment-check` として実行できます。systemd 登録後は `bds-comment-check.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `/etc/default/bds` で明示的に有効化します。
+
+```text
+GAME8_COMMENT_CHECK_ENABLED=1
+GAME8_COMMENT_NAME=backend-receive-check
+GAME8_COMMENT_BODY=backend receive check body
+```
+
+未指定の場合、`GAME8_COMMENT_NAME` と `GAME8_COMMENT_BODY` は実行時刻を含む値を自動生成します。元の `check_comment_post.sh` と同じ `NAME` / `BODY` も利用できますが、両方ある場合は `GAME8_COMMENT_NAME` / `GAME8_COMMENT_BODY` を優先します。対象はデフォルトで `https://game8.jp/216448` です。必要なら次も変更できます。
+
+```text
+GAME8_COMMENT_BASE_URL=https://game8.jp
+GAME8_COMMENT_ARCHIVE_ID=216448
+```
+
+実行頻度を変える場合は、systemd timer を作り直します。初期値は `8h` です。
+
+```bash
+sudo GAME8_COMMENT_CHECK_INTERVAL=12h ./bds.sh install-systemd
+```
+
+成功や失敗は journal にだけ記録します。ワールド内の `say` や Discord には通知しません。
+
+```bash
+journalctl -u bds-comment-check.service -n 100 --no-pager
+systemctl list-timers bds-comment-check.timer
+```
+
+手動実行する場合は次の通りです。
+
+```bash
+sudo GAME8_COMMENT_CHECK_ENABLED=1 ./bds.sh comment-check
 ```
 
 ## 操作
@@ -248,10 +288,10 @@ sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 
 重要なサーバーでは、`backups/` を別ディスクや外部ストレージにもコピーすることを推奨します。
 
-定期更新 timer を確認します。
+定期更新 timer と Game8 コメント POST 確認 timer を確認します。
 
 ```bash
-systemctl list-timers bds-update.timer
+systemctl list-timers bds-update.timer bds-comment-check.timer
 ```
 
 systemd 登録を削除します。
