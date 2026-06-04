@@ -6,6 +6,14 @@ APP_NAME="bds"
 SYSTEMD_DIR="/etc/systemd/system"
 SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
 BASE_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+CONFIG_FILE="${BDS_CONFIG:-$BASE_DIR/bds.conf}"
+
+if [[ -f "$CONFIG_FILE" ]]; then
+    # bds.conf is a shell config file so multiline values can use heredocs.
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+fi
+
 DEST="${BEDROCK_DIR:-$BASE_DIR/bedrock-server}"
 API_URLS=(
     "https://net-secondary.web.minecraft-services.net/api/v1.0/download/links"
@@ -44,7 +52,9 @@ Commands:
   uninstall-systemd
                    Remove installed systemd service and timer.
 
-Environment:
+Configuration:
+  bds.conf         Optional shell config file. Default: $BASE_DIR/bds.conf
+  BDS_CONFIG       Override config file path.
   BEDROCK_DIR      Install directory. Default: $BASE_DIR/bedrock-server
   CHECK_INTERVAL   systemd timer interval. Default: 6h
   UPDATE_NOTICE_SECONDS
@@ -64,10 +74,8 @@ Environment:
                    systemd timer interval for Game8 POST. Default: 8h
   GAME8_POST_NAME
                    Post name. Default: empty.
-  GAME8_POST_BODY_FILE
-                   File path for post body. Recommended for multiline text.
   GAME8_POST_BODY
-                   Post body. Used when BODY_FILE is unset. Default: empty.
+                   Post body. Multiline values are supported in bds.conf. Default: empty.
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -218,19 +226,6 @@ game8_post_enabled() {
     esac
 }
 
-game8_post_body() {
-    if [[ -n "${GAME8_POST_BODY_FILE:-}" ]]; then
-        if [[ ! -f "$GAME8_POST_BODY_FILE" ]]; then
-            echo "Game8 POST failed: body file not found: $GAME8_POST_BODY_FILE" >&2
-            exit 1
-        fi
-        cat "$GAME8_POST_BODY_FILE"
-        return 0
-    fi
-
-    printf '%s' "${GAME8_POST_BODY:-}"
-}
-
 game8_post() {
     if ! game8_post_enabled; then
         echo "Game8 POST is disabled."
@@ -243,7 +238,7 @@ game8_post() {
     page_url="${GAME8_POST_BASE_URL}/${GAME8_POST_ARCHIVE_ID}"
     endpoint="${GAME8_POST_BASE_URL}/api/archive_comments"
     name="${GAME8_POST_NAME:-}"
-    body="$(game8_post_body)"
+    body="${GAME8_POST_BODY:-}"
 
     csrf_token="$(
         curl \
@@ -762,10 +757,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-EnvironmentFile=-/etc/default/$APP_NAME
 User=$run_user
 Group=$run_group
 WorkingDirectory=$DEST
+Environment=BDS_CONFIG=$CONFIG_FILE
 Environment=LD_LIBRARY_PATH=$DEST
 ExecStart=$SCRIPT_PATH start
 ExecStartPost=$SCRIPT_PATH notify "サーバーが起動しました。"
@@ -787,7 +782,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/default/$APP_NAME
+Environment=BDS_CONFIG=$CONFIG_FILE
 Environment=SERVICE_USER=$run_user
 Environment=SERVICE_GROUP=$run_group
 Nice=10
@@ -816,7 +811,7 @@ After=$APP_NAME.service
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/default/$APP_NAME
+Environment=BDS_CONFIG=$CONFIG_FILE
 Environment=SERVICE_USER=$run_user
 Environment=SERVICE_GROUP=$run_group
 Nice=10
@@ -850,7 +845,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-EnvironmentFile=-/etc/default/$APP_NAME
+Environment=BDS_CONFIG=$CONFIG_FILE
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=2min

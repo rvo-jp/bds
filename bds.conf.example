@@ -1,0 +1,27 @@
+# bds configuration.
+# Copy this file to bds.conf and edit values for your server.
+
+# Bedrock install/runtime directory.
+# BEDROCK_DIR="$BASE_DIR/bedrock-server"
+
+# Update check timer. Re-run ./bds.sh install-systemd after changing timer values.
+CHECK_INTERVAL=6h
+UPDATE_NOTICE_SECONDS=300
+
+# Backups. Re-run ./bds.sh install-systemd after changing BACKUP_ON_CALENDAR.
+BACKUP_DIR="$BASE_DIR/backups"
+BACKUP_RETENTION_DAYS=14
+BACKUP_ON_CALENDAR="*-*-* 04:30:00"
+BACKUP_HOLD_SECONDS=10
+BACKUP_MIN_FREE_MB=1024
+
+# Discord notifications. Keep this file out of Git if you set a webhook URL.
+DISCORD_WEBHOOK_URL=
+
+# Game8 POST. Re-run ./bds.sh install-systemd after changing GAME8_POST_INTERVAL.
+GAME8_POST_ENABLED=0
+GAME8_POST_INTERVAL=8h
+GAME8_POST_NAME=
+GAME8_POST_BODY=$(cat <<'EOF'
+EOF
+)

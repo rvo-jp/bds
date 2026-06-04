@@ -16,6 +16,8 @@ https://net.web.minecraft-services.net/api/v1.0/download/links
 ```text
 bds/
 ├── bds.sh
+├── bds.conf
+├── bds.conf.example
 ├── backups/
 └── bedrock-server/
     ├── allowlist.json
@@ -25,7 +27,7 @@ bds/
     └── worlds/
 ```
 
-`bedrock-server/` は自動作成されます。更新時も `allowlist.json`、`permissions.json`、`server.properties`、`worlds/`、`resource_packs/`、`behavior_packs/` は上書きしません。
+`bedrock-server/` は自動作成されます。更新時も `allowlist.json`、`permissions.json`、`server.properties`、`worlds/`、`resource_packs/`、`behavior_packs/` は上書きしません。`bds.conf` はローカル設定ファイルのため Git 管理しません。
 
 ## 初回セットアップ
 
@@ -36,10 +38,12 @@ sudo apt update
 sudo apt install -y curl jq libarchive-tools unzip
 ```
 
-スクリプトに実行権限を付けます。
+スクリプトに実行権限を付け、設定ファイルを作ります。
 
 ```bash
 chmod +x bds.sh
+cp bds.conf.example bds.conf
+nano bds.conf
 ```
 
 systemd service と timer をインストールします。
@@ -58,30 +62,16 @@ sudo ./bds.sh install-systemd
 - `bds-backup.timer` が 1 日 1 回、ワールドをバックアップ
 - `bds-game8-post.timer` が 8 時間ごとに Game8 POST を実行可能
 
-更新確認の間隔を変える場合は、初回インストール時に `CHECK_INTERVAL` を指定します。Minecraft 側へ性能を寄せるため、通常は 6 時間以上を推奨します。
+設定はプロジェクト配下の `bds.conf` に書きます。`bds.conf` は shell として読み込まれるため、通常の変数代入や heredoc が使えます。
 
 ```bash
-sudo CHECK_INTERVAL=12h ./bds.sh install-systemd
+nano bds.conf
 ```
 
-更新前の待機時間を変える場合は `/etc/default/bds` に設定します。
+更新確認やバックアップ、Game8 POST の timer 間隔を変えた場合は、systemd unit を再生成します。Minecraft 側へ性能を寄せるため、更新確認は通常 6 時間以上を推奨します。
 
 ```bash
-sudo nano /etc/default/bds
-```
-
-```text
-UPDATE_NOTICE_SECONDS=300
-BACKUP_RETENTION_DAYS=14
-GAME8_POST_ENABLED=0
-GAME8_POST_NAME=backend-receive-check
-GAME8_POST_BODY_FILE=/etc/bds/game8-post-body.txt
-```
-
-設定変更後は systemd を読み直します。
-
-```bash
-sudo systemctl daemon-reload
+sudo ./bds.sh install-systemd
 ```
 
 Minecraft 公式の ZIP ダウンロードでは、ブラウザ相当の `User-Agent` と `Referer` ヘッダーを付けて取得します。
@@ -107,7 +97,7 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 sudo ./bds.sh notify "メンテナンスを開始します。"
 ```
 
-Webhook URL は秘匿情報なので、README や Git には入れず `/etc/default/bds` にだけ保存してください。
+Webhook URL は秘匿情報なので、README や Git には入れず `bds.conf` にだけ保存してください。`bds.conf` は `.gitignore` 済みです。
 
 既に `install-systemd` 済みの環境で通知設定や通知対象が変わった場合は、systemd unit を再生成します。
 
@@ -117,29 +107,27 @@ sudo ./bds.sh install-systemd
 
 ## Game8 POST
 
-Game8 への POST を `bds.sh game8-post` として実行できます。systemd 登録後は `bds-game8-post.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `/etc/default/bds` で明示的に有効化します。
+Game8 への POST を `bds.sh game8-post` として実行できます。systemd 登録後は `bds-game8-post.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `bds.conf` で明示的に有効化します。
 
-```text
+```bash
 GAME8_POST_ENABLED=1
 GAME8_POST_NAME=backend-receive-check
-GAME8_POST_BODY_FILE=/etc/bds/game8-post-body.txt
+GAME8_POST_BODY=$(cat <<'EOF'
+1行目
+2行目
+3行目
+EOF
+)
 ```
 
-本文は複数行になることが多いため、`GAME8_POST_BODY_FILE` で別ファイルに置く方針です。
+`GAME8_POST_BODY` が未指定なら本文は空文字列です。`GAME8_POST_NAME` が未指定なら投稿者名は空文字列です。
+
+投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の設定項目からは変更できないため、誤設定で投稿先が変わることはありません。
+
+実行頻度を変える場合は、`bds.conf` の `GAME8_POST_INTERVAL` を変更して systemd timer を作り直します。初期値は `8h` です。
 
 ```bash
-sudo mkdir -p /etc/bds
-sudo nano /etc/bds/game8-post-body.txt
-```
-
-`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` を使います。どちらも未指定なら本文は空文字列です。`GAME8_POST_NAME` が未指定なら投稿者名は空文字列です。
-
-投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の Environment からは変更できないため、誤設定で投稿先が変わることはありません。
-
-実行頻度を変える場合は、systemd timer を作り直します。初期値は `8h` です。
-
-```bash
-sudo GAME8_POST_INTERVAL=12h ./bds.sh install-systemd
+sudo ./bds.sh install-systemd
 ```
 
 成功や失敗は journal にだけ簡潔に記録します。レスポンス本文の詳細分析は行わず、ワールド内の `say` や Discord にも通知しません。
@@ -251,23 +239,23 @@ BACKUP_HOLD_SECONDS=10
 BACKUP_MIN_FREE_MB=1024
 ```
 
-`/etc/default/bds` に設定すると、systemd のバックアップ service に反映されます。`BACKUP_DIR` を指定する場合は絶対パスを使ってください。
+`bds.conf` に設定すると反映されます。`BACKUP_DIR` を指定する場合は絶対パスを使ってください。
 
 ```bash
-sudo nano /etc/default/bds
+nano bds.conf
 ```
 
-```text
+```bash
 BACKUP_DIR=/home/ubuntu/bds/backups
 BACKUP_RETENTION_DAYS=14
 BACKUP_HOLD_SECONDS=10
 BACKUP_MIN_FREE_MB=1024
 ```
 
-バックアップ実行時刻を変える場合は、systemd timer を作り直します。
+バックアップ実行時刻を変える場合は、`bds.conf` の `BACKUP_ON_CALENDAR` を変更して systemd timer を作り直します。
 
 ```bash
-sudo BACKUP_ON_CALENDAR="*-*-* 03:30:00" ./bds.sh install-systemd
+sudo ./bds.sh install-systemd
 ```
 
 バックアップ timer を確認します。

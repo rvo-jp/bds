@@ -4,6 +4,7 @@ Icon?
 # Bedrock server runtime files are downloaded/generated on the server.
 bedrock-server/
 backups/
+bds.conf
 
 # Local logs and archives.
 *.log
