@@ -24,7 +24,7 @@ GAME8_POST_ENABLED="${GAME8_POST_ENABLED:-0}"
 GAME8_POST_INTERVAL="${GAME8_POST_INTERVAL:-8h}"
 GAME8_POST_BASE_URL="https://game8.jp"
 GAME8_POST_ARCHIVE_ID="216448"
-CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 bds-installer}"
+CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36}"
 
 usage() {
     cat <<EOF
@@ -63,11 +63,11 @@ Environment:
   GAME8_POST_INTERVAL
                    systemd timer interval for Game8 POST. Default: 8h
   GAME8_POST_NAME
-                   Post name. NAME is also supported. Default: empty.
+                   Post name. Default: empty.
   GAME8_POST_BODY_FILE
                    File path for post body. Recommended for multiline text.
   GAME8_POST_BODY
-                   Post body. BODY is also supported. Used when BODY_FILE is unset.
+                   Post body. Used when BODY_FILE is unset. Default: empty.
   DISCORD_WEBHOOK_URL
                    Optional Discord webhook URL for update notifications.
 EOF
@@ -228,7 +228,7 @@ game8_post_body() {
         return 0
     fi
 
-    printf '%s' "${GAME8_POST_BODY:-${BODY:-}}"
+    printf '%s' "${GAME8_POST_BODY:-}"
 }
 
 game8_post() {
@@ -242,7 +242,7 @@ game8_post() {
     local page_url endpoint csrf_token name body http_status
     page_url="${GAME8_POST_BASE_URL}/${GAME8_POST_ARCHIVE_ID}"
     endpoint="${GAME8_POST_BASE_URL}/api/archive_comments"
-    name="${GAME8_POST_NAME:-${NAME:-}}"
+    name="${GAME8_POST_NAME:-}"
     body="$(game8_post_body)"
 
     csrf_token="$(
@@ -252,8 +252,16 @@ game8_post() {
             --show-error \
             --location \
             --user-agent "$CURL_USER_AGENT" \
-            --header "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8" \
-            --header "Accept-Language: ja,en-US;q=0.9,en;q=0.8" \
+            --header 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8' \
+            --header 'Accept-Language: ja,en-US;q=0.9,en;q=0.8' \
+            --header 'Sec-CH-UA: "Google Chrome";v="149", "Chromium";v="149", "Not.A/Brand";v="24"' \
+            --header 'Sec-CH-UA-Mobile: ?0' \
+            --header 'Sec-CH-UA-Platform: "Windows"' \
+            --header 'Sec-Fetch-Dest: document' \
+            --header 'Sec-Fetch-Mode: navigate' \
+            --header 'Sec-Fetch-Site: none' \
+            --header 'Sec-Fetch-User: ?1' \
+            --header 'Upgrade-Insecure-Requests: 1' \
             "$page_url" \
             | sed -nE 's/.*<meta name="csrf-token" content="([^"]+)".*/\1/p' \
             | head -n 1
@@ -271,8 +279,16 @@ game8_post() {
             --location \
             --request POST \
             --user-agent "$CURL_USER_AGENT" \
-            --header "Accept: application/json" \
-            --header "Accept-Language: ja,en-US;q=0.9,en;q=0.8" \
+            --header 'Accept: application/json, text/javascript, */*; q=0.01' \
+            --header 'Accept-Language: ja,en-US;q=0.9,en;q=0.8' \
+            --header 'Sec-CH-UA: "Google Chrome";v="149", "Chromium";v="149", "Not.A/Brand";v="24"' \
+            --header 'Sec-CH-UA-Mobile: ?0' \
+            --header 'Sec-CH-UA-Platform: "Windows"' \
+            --header 'Sec-Fetch-Dest: empty' \
+            --header 'Sec-Fetch-Mode: cors' \
+            --header 'Sec-Fetch-Site: same-origin' \
+            --header 'X-Requested-With: XMLHttpRequest' \
+            --header "Origin: $GAME8_POST_BASE_URL" \
             --header "X-CSRF-Token: $csrf_token" \
             --referer "$page_url" \
             --form "archive_comment[archive_id]=$GAME8_POST_ARCHIVE_ID" \

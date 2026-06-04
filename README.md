@@ -117,7 +117,7 @@ sudo ./bds.sh install-systemd
 
 ## Game8 POST
 
-`check_comment_post.sh` と同等の curl 処理を `bds.sh game8-post` として実行できます。systemd 登録後は `bds-game8-post.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `/etc/default/bds` で明示的に有効化します。
+Game8 への POST を `bds.sh game8-post` として実行できます。systemd 登録後は `bds-game8-post.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `/etc/default/bds` で明示的に有効化します。
 
 ```text
 GAME8_POST_ENABLED=1
@@ -132,7 +132,7 @@ sudo mkdir -p /etc/bds
 sudo nano /etc/bds/game8-post-body.txt
 ```
 
-`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` または元の `check_comment_post.sh` と同じ `BODY` を使います。どれも未指定なら本文は空文字列です。`GAME8_POST_NAME` は元の `NAME` も利用できますが、どちらも未指定なら空文字列です。両方ある場合は `GAME8_POST_NAME` を優先します。
+`GAME8_POST_BODY_FILE` が未指定の場合だけ、`GAME8_POST_BODY` を使います。どちらも未指定なら本文は空文字列です。`GAME8_POST_NAME` が未指定なら投稿者名は空文字列です。
 
 投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の Environment からは変更できないため、誤設定で投稿先が変わることはありません。
 
