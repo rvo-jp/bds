@@ -40,18 +40,19 @@ usage() {
 使い方: $0 <コマンド>
 
 コマンド:
-  install          Bedrock Dedicated Server をダウンロードまたは更新します。
-  start            bedrock_server をフォアグラウンドで起動します。
-  stop             このスクリプトで起動したサーバーへ stop を送信します。
-  auto-update      更新を確認し、必要なら systemd service を再起動します。
+  start            BDS 本体と systemd 設定を準備して bds.service を起動します。
+  stop             bds.service を停止します。
+  restart          BDS 本体と systemd 設定を準備して bds.service を再起動します。
+  run              bedrock_server をフォアグラウンドで直接起動します。
+  send-stop        起動中の bedrock_server へ stop を送信します。
+  command <cmd>    起動中の bedrock_server へワールド内コマンドを送信します。
   backup           サーバーを停止せずに worlds をバックアップします。
   restore <archive>
                    バックアップアーカイブから worlds を復元します。
-  game8-post       有効化されている場合、Game8 へ定期 POST します。
-  notify <message> DISCORD_WEBHOOK_URL が設定されている場合、Discord へ通知します。
-  install-systemd  24時間稼働用の systemd service と timer をインストールします。
-  uninstall-systemd
-                   インストール済みの systemd service と timer を削除します。
+  status [target]  systemd unit の状態を確認します。target: server/update/backup/game8/*-timer
+  logs [target]    journal を表示します。target: server/update/backup/game8
+  timers           bds 関連の systemd timer を一覧表示します。
+  uninstall         systemd service と timer を削除します。
 
 設定:
   bds.conf         任意の shell 設定ファイル。既定: $BASE_DIR/bds.conf
@@ -139,11 +140,141 @@ systemctl_disable_now() {
     done
 }
 
+systemctl_enable() {
+    local unit
+    for unit in "$@"; do
+        systemctl enable "$unit"
+    done
+}
+
 systemctl_enable_now() {
     local unit
     for unit in "$@"; do
         systemctl enable --now "$unit"
     done
+}
+
+service_unit_for_target() {
+    local target="${1:-server}"
+
+    case "$target" in
+        server|service|bds|"")
+            printf '%s\n' "$APP_NAME.service"
+            ;;
+        update)
+            printf '%s\n' "$APP_NAME-update.service"
+            ;;
+        backup)
+            printf '%s\n' "$APP_NAME-backup.service"
+            ;;
+        game8|game8-post)
+            printf '%s\n' "$APP_NAME-game8-post.service"
+            ;;
+        *.service)
+            printf '%s\n' "$target"
+            ;;
+        *)
+            echo "不明な service 対象です: $target" >&2
+            exit 1
+            ;;
+    esac
+}
+
+systemd_unit_for_target() {
+    local target="${1:-server}"
+
+    case "$target" in
+        update-timer)
+            printf '%s\n' "$APP_NAME-update.timer"
+            ;;
+        backup-timer)
+            printf '%s\n' "$APP_NAME-backup.timer"
+            ;;
+        game8-timer|game8-post-timer)
+            printf '%s\n' "$APP_NAME-game8-post.timer"
+            ;;
+        *.timer)
+            printf '%s\n' "$target"
+            ;;
+        *)
+            service_unit_for_target "$target"
+            ;;
+    esac
+}
+
+service_control() {
+    local action="${1:-status}"
+
+    case "$action" in
+        status)
+            systemctl status "$APP_NAME.service"
+            ;;
+        start)
+            configure_systemd
+            systemctl_run start "$APP_NAME.service"
+            ;;
+        restart)
+            configure_systemd
+            systemctl_run restart "$APP_NAME.service"
+            ;;
+        stop)
+            systemctl_run stop "$APP_NAME.service"
+            ;;
+        *)
+            echo "使い方: $0 <start|stop|restart>" >&2
+            exit 1
+            ;;
+    esac
+}
+
+status_command() {
+    local unit
+    unit="$(systemd_unit_for_target "${1:-server}")"
+    systemctl status "$unit"
+}
+
+logs_command() {
+    local target="server"
+    local follow=0
+    local lines=100
+
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            -f|--follow)
+                follow=1
+                shift
+                ;;
+            -n|--lines)
+                if [[ -z "${2:-}" ]]; then
+                    echo "使い方: $0 logs [target] [-n lines] [--follow]" >&2
+                    exit 1
+                fi
+                lines="$2"
+                shift 2
+                ;;
+            *)
+                target="$1"
+                shift
+                ;;
+        esac
+    done
+
+    validate_non_negative_integer "logs lines" "$lines"
+
+    local unit
+    unit="$(service_unit_for_target "$target")"
+    if [[ "$follow" -eq 1 ]]; then
+        journalctl -u "$unit" -f
+    else
+        journalctl -u "$unit" -n "$lines" --no-pager
+    fi
+}
+
+timers_command() {
+    systemctl list-timers \
+        "$APP_NAME-update.timer" \
+        "$APP_NAME-backup.timer" \
+        "$APP_NAME-game8-post.timer"
 }
 
 remove_systemd_units() {
@@ -186,8 +317,14 @@ curl_download() {
 
 send_server_command() {
     local command="$1"
-    if [[ -p "$STDIN_FIFO" ]]; then
+    if [[ ! -p "$STDIN_FIFO" ]]; then
+        return 0
+    fi
+
+    if command -v timeout >/dev/null 2>&1; then
         timeout 5s bash -c 'printf "%s\n" "$1" > "$2"' _ "$command" "$STDIN_FIFO" || true
+    else
+        printf '%s\n' "$command" > "$STDIN_FIFO" || true
     fi
 }
 
@@ -495,7 +632,7 @@ install_server() {
 
 start_server() {
     if [[ ! -x "$DEST/bedrock_server" ]]; then
-        echo "サーバー実行ファイルが見つかりません。先に実行してください: $0 install" >&2
+        echo "サーバー実行ファイルが見つかりません。先に実行してください: $0 start" >&2
         exit 1
     fi
 
@@ -510,12 +647,29 @@ start_server() {
     tail -f "$STDIN_FIFO" | ./bedrock_server
 }
 
-stop_server() {
+require_server_input_fifo() {
     if [[ ! -p "$STDIN_FIFO" ]]; then
         echo "サーバー入力 FIFO が見つかりません: $STDIN_FIFO" >&2
+        echo "サーバーが起動中か確認してください: $0 status" >&2
+        exit 1
+    fi
+}
+
+server_command() {
+    local command="$*"
+
+    if [[ -z "$command" ]]; then
+        echo "使い方: $0 command <Bedrockコマンド>" >&2
+        echo "例: $0 command say メンテナンスを5分後に開始します。" >&2
         exit 1
     fi
 
+    require_server_input_fifo
+    send_server_command "$command"
+}
+
+stop_server() {
+    require_server_input_fifo
     send_server_command "stop"
 }
 
@@ -789,9 +943,9 @@ auto_update() {
     fi
 }
 
-install_systemd() {
+configure_systemd() {
     if ! is_root; then
-        echo "root 権限で実行してください: sudo $0 install-systemd" >&2
+        echo "root 権限で実行してください: sudo $0 start" >&2
         exit 1
     fi
 
@@ -818,9 +972,9 @@ Group=$run_group
 WorkingDirectory=$DEST
 Environment=BDS_CONFIG=$CONFIG_FILE
 Environment=LD_LIBRARY_PATH=$DEST
-ExecStart=$SCRIPT_PATH start
+ExecStart=$SCRIPT_PATH run
 ExecStartPost=$SCRIPT_PATH notify "サーバーが起動しました。"
-ExecStop=$SCRIPT_PATH stop
+ExecStop=$SCRIPT_PATH send-stop
 ExecStopPost=$SCRIPT_PATH notify "サーバーが停止しました。"
 Restart=always
 RestartSec=10
@@ -844,7 +998,7 @@ Environment=SERVICE_GROUP=$run_group
 Nice=10
 IOSchedulingClass=idle
 TimeoutStartSec=30min
-ExecStart=$SCRIPT_PATH auto-update
+ExecStart=$SCRIPT_PATH update
 EOF
 
     cat >"$(systemd_unit_path "$APP_NAME-update.timer")" <<EOF
@@ -922,22 +1076,22 @@ WantedBy=timers.target
 EOF
 
     systemctl daemon-reload
+    systemctl_enable "$APP_NAME.service"
     systemctl_enable_now \
-        "$APP_NAME.service" \
         "$APP_NAME-update.timer" \
         "$APP_NAME-backup.timer" \
         "$APP_NAME-game8-post.timer"
 
-    echo "インストールして起動しました:"
-    echo "  systemctl status $APP_NAME.service"
-    echo "  systemctl status $APP_NAME-update.timer"
-    echo "  systemctl status $APP_NAME-backup.timer"
-    echo "  systemctl status $APP_NAME-game8-post.timer"
+    echo "systemd 設定を更新しました:"
+    echo "  $SCRIPT_PATH status"
+    echo "  $SCRIPT_PATH status update-timer"
+    echo "  $SCRIPT_PATH status backup-timer"
+    echo "  $SCRIPT_PATH status game8-timer"
 }
 
 uninstall_systemd() {
     if ! is_root; then
-        echo "root 権限で実行してください: sudo $0 uninstall-systemd" >&2
+        echo "root 権限で実行してください: sudo $0 uninstall" >&2
         exit 1
     fi
 
@@ -963,16 +1117,20 @@ uninstall_systemd() {
 
 cmd="${1:-}"
 case "$cmd" in
-    install)
-        install_server
-        ;;
-    start)
+    run)
         start_server
         ;;
-    stop)
+    send-stop)
         stop_server
         ;;
-    auto-update)
+    command)
+        shift
+        server_command "$@"
+        ;;
+    start|stop|restart)
+        service_control "$cmd"
+        ;;
+    update|auto-update)
         auto_update
         ;;
     backup)
@@ -987,10 +1145,17 @@ case "$cmd" in
     notify)
         notify_command "${2:-}"
         ;;
-    install-systemd)
-        install_systemd
+    status)
+        status_command "${2:-server}"
         ;;
-    uninstall-systemd)
+    logs)
+        shift
+        logs_command "$@"
+        ;;
+    timers)
+        timers_command
+        ;;
+    uninstall)
         uninstall_systemd
         ;;
     -h|--help|help|"")

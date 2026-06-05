@@ -46,10 +46,10 @@ cp bds.conf.example bds.conf
 nano bds.conf
 ```
 
-systemd service と timer をインストールします。
+BDS 本体、systemd service、timer を準備して起動します。
 
 ```bash
-sudo ./bds.sh install-systemd
+sudo ./bds.sh start
 ```
 
 これで次の状態になります。
@@ -68,10 +68,10 @@ sudo ./bds.sh install-systemd
 nano bds.conf
 ```
 
-更新確認やバックアップ、Game8 POST の timer 間隔を変えた場合は、systemd unit を再生成します。Minecraft 側へ性能を寄せるため、更新確認は通常 6 時間以上を推奨します。
+更新確認やバックアップ、Game8 POST の timer 間隔を変えた場合は、`restart` で systemd unit を再生成します。Minecraft 側へ性能を寄せるため、更新確認は通常 6 時間以上を推奨します。
 
 ```bash
-sudo ./bds.sh install-systemd
+sudo ./bds.sh restart
 ```
 
 Minecraft 公式の ZIP ダウンロードでは、ブラウザ相当の `User-Agent` と `Referer` ヘッダーを付けて取得します。
@@ -91,23 +91,18 @@ DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
 - バックアップ開始、完了、失敗、空き容量不足
 - バックアップ復元の開始、完了、復元後の再起動
 
-手動で Discord 通知を送ることもできます。
-
-```bash
-sudo ./bds.sh notify "メンテナンスを開始します。"
-```
 
 Webhook URL は秘匿情報なので、README や Git には入れず `bds.conf` にだけ保存してください。`bds.conf` は `.gitignore` 済みです。
 
-既に `install-systemd` 済みの環境で通知設定や通知対象が変わった場合は、systemd unit を再生成します。
+通知設定や通知対象を変えた場合は、`restart` で systemd unit を再生成して反映します。
 
 ```bash
-sudo ./bds.sh install-systemd
+sudo ./bds.sh restart
 ```
 
 ## Game8 POST
 
-Game8 への POST を `bds.sh game8-post` として実行できます。systemd 登録後は `bds-game8-post.timer` が 8 時間ごとに起動しますが、デフォルトでは POST しません。利用する場合は `bds.conf` で明示的に有効化します。
+Game8 への POST は `bds-game8-post.timer` で定期実行できますが、デフォルトでは POST しません。利用する場合は `bds.conf` で明示的に有効化します。
 
 ```bash
 GAME8_POST_ENABLED=1
@@ -127,40 +122,29 @@ EOF
 実行頻度を変える場合は、`bds.conf` の `GAME8_POST_INTERVAL` を変更して systemd timer を作り直します。初期値は `8h` です。
 
 ```bash
-sudo ./bds.sh install-systemd
+sudo ./bds.sh restart
 ```
 
 成功や失敗は journal にだけ簡潔に記録します。レスポンス本文の詳細分析は行わず、ワールド内の `say` や Discord にも通知しません。
 
 ```bash
-journalctl -u bds-game8-post.service -n 100 --no-pager
-systemctl list-timers bds-game8-post.timer
+./bds.sh logs game8
+./bds.sh status game8-timer
 ```
 
-手動実行する場合は次の通りです。
-
-```bash
-sudo GAME8_POST_ENABLED=1 ./bds.sh game8-post
-```
 
 ## 操作
 
 サーバー状態を確認します。
 
 ```bash
-systemctl status bds.service
+./bds.sh status
 ```
 
 ログを確認します。
 
 ```bash
-journalctl -u bds.service -f
-```
-
-手動で更新確認します。
-
-```bash
-sudo ./bds.sh auto-update
+./bds.sh logs --follow
 ```
 
 手動でワールドをバックアップします。
@@ -178,38 +162,26 @@ sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 サーバーを停止、起動、再起動します。
 
 ```bash
-sudo systemctl stop bds.service
-sudo systemctl start bds.service
-sudo systemctl restart bds.service
-```
-
-## ワールド内コマンド送信
-
-`bds.service` で起動している間は、次の FIFO に Bedrock server の stdin コマンドを送れます。
-
-```text
-/opt/bds/bedrock-server/.server.stdin
-```
-
-例:
-
-```bash
-printf 'say メンテナンスを5分後に開始します。\n' > /opt/bds/bedrock-server/.server.stdin
-printf 'list\n' > /opt/bds/bedrock-server/.server.stdin
-printf 'save hold\n' > /opt/bds/bedrock-server/.server.stdin
-printf 'save resume\n' > /opt/bds/bedrock-server/.server.stdin
-```
-
-停止は `bds.sh` 経由でも送れます。
-
-```bash
 sudo ./bds.sh stop
+sudo ./bds.sh start
+sudo ./bds.sh restart
 ```
 
-FIFO はサーバー起動中だけ存在します。存在確認:
+## ワールド内コマンド実行
+
+`bds.service` で起動している間は、`command` で Bedrock server の stdin にコマンドを送れます。
 
 ```bash
-ls -l /opt/bds/bedrock-server/.server.stdin
+./bds.sh command say メンテナンスを5分後に開始します。
+./bds.sh command list
+./bds.sh command save hold
+./bds.sh command save resume
+```
+
+bedrock_server の stdin に `stop` を直接送りたい場合は `send-stop` を使います。通常の停止は `sudo ./bds.sh stop` を使ってください。
+
+```bash
+sudo ./bds.sh send-stop
 ```
 
 ## メンテナンス方針
@@ -255,19 +227,19 @@ BACKUP_MIN_FREE_MB=1024
 バックアップ実行時刻を変える場合は、`bds.conf` の `BACKUP_ON_CALENDAR` を変更して systemd timer を作り直します。
 
 ```bash
-sudo ./bds.sh install-systemd
+sudo ./bds.sh restart
 ```
 
 バックアップ timer を確認します。
 
 ```bash
-systemctl list-timers bds-backup.timer
+./bds.sh status backup-timer
 ```
 
 バックアップ先ディレクトリだけ作成されて中身が空の場合は、バックアップ service が途中で失敗しています。原因は journal に出ます。
 
 ```bash
-journalctl -u bds-backup.service -n 100 --no-pager
+./bds.sh logs backup
 ```
 
 よくある原因は、空き容量不足、`bedrock-server/worlds/` が存在しない、または `tar.gz` の作成や検証に失敗したケースです。
@@ -283,13 +255,13 @@ sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 定期更新 timer と Game8 POST timer を確認します。
 
 ```bash
-systemctl list-timers bds-update.timer bds-game8-post.timer
+./bds.sh timers
 ```
 
 systemd 登録を削除します。
 
 ```bash
-sudo ./bds.sh uninstall-systemd
+sudo ./bds.sh uninstall
 ```
 
 ## ポート
@@ -311,5 +283,5 @@ SERVER_NAME_FORMAT="RvoSMP %v"
 ```
 
 ```bash
-sudo systemctl restart bds.service
+sudo ./bds.sh restart
 ```
