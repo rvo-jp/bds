@@ -28,6 +28,7 @@ BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
 BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
+SERVER_NAME_FORMAT="${SERVER_NAME_FORMAT-}"
 GAME8_POST_ENABLED="${GAME8_POST_ENABLED:-0}"
 GAME8_POST_INTERVAL="${GAME8_POST_INTERVAL:-8h}"
 GAME8_POST_BASE_URL="https://game8.jp"
@@ -68,6 +69,8 @@ usage() {
                    save hold 後に待機する秒数。既定: 10
   BACKUP_MIN_FREE_MB
                    バックアップ前に確保する最低空き容量 MB。既定: 1024
+  SERVER_NAME_FORMAT
+                   server-name の形式。%v=プレイヤー向け表記、%V=BDSフル表記。未設定または空なら自動変更しません。
   GAME8_POST_ENABLED
                    Game8 POST を有効化します。1 で有効。既定: 0
   GAME8_POST_INTERVAL
@@ -374,6 +377,57 @@ current_version() {
     fi
 }
 
+client_version() {
+    local version="$1"
+
+    printf '%s\n' "$version" | sed -E 's/^1\.//; s/(\.[0-9]+)$//'
+}
+
+render_server_name() {
+    local version="$1"
+    local short_version rendered
+    short_version="$(client_version "$version")"
+    rendered="$SERVER_NAME_FORMAT"
+
+    if [[ -z "$rendered" ]]; then
+        return 0
+    fi
+
+    rendered="${rendered//%V/$version}"
+    rendered="${rendered//%v/$short_version}"
+    printf '%s\n' "$rendered"
+}
+
+update_server_name_version() {
+    local version="$1"
+    local props="$DEST/server.properties"
+    local rendered tmp
+
+    rendered="$(render_server_name "$version")"
+    if [[ -z "$rendered" || ! -f "$props" ]]; then
+        return 0
+    fi
+
+    tmp="$(mktemp)"
+    awk -v rendered="$rendered" '
+        BEGIN { updated = 0 }
+        /^server-name=/ {
+            print "server-name=" rendered
+            updated = 1
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print "server-name=" rendered
+            }
+        }
+    ' "$props" > "$tmp"
+    mv "$tmp" "$props"
+
+    echo "サーバー名を更新しました: $rendered"
+}
+
 extract_server() {
     local url="$1"
     local tmp_zip
@@ -427,6 +481,7 @@ install_server() {
     installed="$(current_version || true)"
 
     if [[ "$installed" == "$version" && -x "$DEST/bedrock_server" ]]; then
+        update_server_name_version "$version"
         echo "すでに最新版です: $version"
         return 0
     fi
@@ -434,6 +489,7 @@ install_server() {
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
+    update_server_name_version "$version"
     echo "Bedrock Dedicated Server をインストールしました: $version"
 }
 
@@ -721,6 +777,7 @@ auto_update() {
     extract_server "$url"
     printf '%s\n' "$version" > "$VERSION_FILE"
     printf '%s\n' "$url" > "$URL_FILE"
+    update_server_name_version "$version"
     chown_for_service "$BASE_DIR" "$DEST"
     echo "Bedrock Dedicated Server を更新しました: ${installed:-none} -> $version"
 

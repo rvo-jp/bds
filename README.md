@@ -302,7 +302,13 @@ sudo ufw allow 19132/udp
 
 ## 注意
 
-`server.properties` の `server-name`、`gamemode`、`difficulty`、`max-players` などは `bedrock-server/server.properties` で変更します。変更後は再起動してください。
+`server.properties` の `gamemode`、`difficulty`、`max-players` などは `bedrock-server/server.properties` で変更します。変更後は再起動してください。
+
+`server-name` は `bds.conf` の `SERVER_NAME_FORMAT` で管理できます。`%v` はプレイヤー向け表記、`%V` は BDS のフル表記に置き換わります。空文字列にすると自動変更しません。
+
+```bash
+SERVER_NAME_FORMAT="RvoSMP %v"
+```
 
 ```bash
 sudo systemctl restart bds.service
