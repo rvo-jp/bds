@@ -641,10 +641,11 @@ start_server() {
 
     rm -f "$STDIN_FIFO"
     mkfifo "$STDIN_FIFO"
-    trap 'rm -f "$STDIN_FIFO"' EXIT
-    trap 'printf "stop\n" > "$STDIN_FIFO" 2>/dev/null || true' TERM INT
+    exec 3<>"$STDIN_FIFO"
+    trap 'printf "stop\n" >&3 2>/dev/null || true' TERM INT
+    trap 'exec 3>&- 2>/dev/null || true; rm -f "$STDIN_FIFO"' EXIT
 
-    tail -f "$STDIN_FIFO" | ./bedrock_server
+    ./bedrock_server <&3
 }
 
 require_server_input_fifo() {
