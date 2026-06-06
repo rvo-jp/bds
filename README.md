@@ -60,7 +60,6 @@ sudo ./bds.sh start
 - 更新処理は低 CPU/I/O 優先度で実行され、サーバー本体への影響を抑制
 - 更新 service は警告待機とダウンロード時間を見込んで最大 30 分まで実行可能
 - `bds-backup.timer` が 1 日 1 回、ワールドをバックアップ
-- `bds-game8-post.timer` が 8 時間ごとに Game8 POST を実行可能
 
 設定はプロジェクト配下の `bds.conf` に書きます。`bds.conf` は shell として読み込まれるため、通常の変数代入や heredoc が使えます。
 
@@ -68,7 +67,7 @@ sudo ./bds.sh start
 nano bds.conf
 ```
 
-更新確認やバックアップ、Game8 POST の timer 間隔を変えた場合は、`restart` で systemd unit を再生成します。Minecraft 側へ性能を寄せるため、更新確認は通常 6 時間以上を推奨します。
+更新確認やバックアップの timer 間隔を変えた場合は、`restart` で systemd unit を再生成します。Minecraft 側へ性能を寄せるため、更新確認は通常 6 時間以上を推奨します。
 
 ```bash
 sudo ./bds.sh restart
@@ -99,39 +98,6 @@ Webhook URL は秘匿情報なので、README や Git には入れず `bds.conf`
 ```bash
 sudo ./bds.sh restart
 ```
-
-## Game8 POST
-
-Game8 への POST は `bds-game8-post.timer` で定期実行できますが、デフォルトでは POST しません。利用する場合は `bds.conf` で明示的に有効化します。
-
-```bash
-GAME8_POST_ENABLED=1
-GAME8_POST_NAME=backend-receive-check
-GAME8_POST_BODY=$(cat <<'EOF'
-1行目
-2行目
-3行目
-EOF
-)
-```
-
-`GAME8_POST_BODY` が未指定なら本文は空文字列です。`GAME8_POST_NAME` が未指定なら投稿者名は空文字列です。
-
-投稿先は `https://game8.jp/216448` と `/api/archive_comments` で固定しています。通常の設定項目からは変更できないため、誤設定で投稿先が変わることはありません。
-
-実行頻度を変える場合は、`bds.conf` の `GAME8_POST_INTERVAL` を変更して systemd timer を作り直します。初期値は `8h` です。
-
-```bash
-sudo ./bds.sh restart
-```
-
-成功や失敗は journal にだけ簡潔に記録します。レスポンス本文の詳細分析は行わず、ワールド内の `say` や Discord にも通知しません。
-
-```bash
-./bds.sh logs game8
-./bds.sh status game8-timer
-```
-
 
 ## 操作
 
@@ -252,7 +218,7 @@ sudo ./bds.sh restore backups/bds-worlds-YYYYMMDD-HHMMSS.tar.gz
 
 重要なサーバーでは、`backups/` を別ディスクや外部ストレージにもコピーすることを推奨します。
 
-定期更新 timer と Game8 POST timer を確認します。
+定期更新 timer とバックアップ timer を確認します。
 
 ```bash
 ./bds.sh timers

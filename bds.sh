@@ -29,10 +29,6 @@ BACKUP_ON_CALENDAR="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
 BACKUP_HOLD_SECONDS="${BACKUP_HOLD_SECONDS:-10}"
 BACKUP_MIN_FREE_MB="${BACKUP_MIN_FREE_MB:-1024}"
 SERVER_NAME_FORMAT="${SERVER_NAME_FORMAT-}"
-GAME8_POST_ENABLED="${GAME8_POST_ENABLED:-0}"
-GAME8_POST_INTERVAL="${GAME8_POST_INTERVAL:-8h}"
-GAME8_POST_BASE_URL="https://game8.jp"
-GAME8_POST_ARCHIVE_ID="216448"
 CURL_USER_AGENT="${CURL_USER_AGENT:-Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36}"
 
 usage() {
@@ -49,8 +45,8 @@ usage() {
   backup           サーバーを停止せずに worlds をバックアップします。
   restore <archive>
                    バックアップアーカイブから worlds を復元します。
-  status [target]  systemd unit の状態を確認します。target: server/update/backup/game8/*-timer
-  logs [target]    journal を表示します。target: server/update/backup/game8
+  status [target]  systemd unit の状態を確認します。target: server/update/backup/*-timer
+  logs [target]    journal を表示します。target: server/update/backup
   timers           bds 関連の systemd timer を一覧表示します。
   uninstall         systemd service と timer を削除します。
 
@@ -72,14 +68,6 @@ usage() {
                    バックアップ前に確保する最低空き容量 MB。既定: 1024
   SERVER_NAME_FORMAT
                    server-name の形式。%v=プレイヤー向け表記、%V=BDSフル表記。未設定または空なら自動変更しません。
-  GAME8_POST_ENABLED
-                   Game8 POST を有効化します。1 で有効。既定: 0
-  GAME8_POST_INTERVAL
-                   Game8 POST timer の間隔。既定: 8h
-  GAME8_POST_NAME
-                   投稿者名。既定: 空文字列
-  GAME8_POST_BODY
-                   投稿本文。bds.conf では複数行を設定できます。既定: 空文字列
   DISCORD_WEBHOOK_URL
                    Discord 通知用 Webhook URL。未設定なら通知しません。
 EOF
@@ -111,10 +99,6 @@ require_deps() {
 
 require_backup_deps() {
     need_cmds tar find date df du awk grep curl jq mktemp
-}
-
-require_game8_post_deps() {
-    need_cmds curl sed head date
 }
 
 is_root() {
@@ -167,9 +151,6 @@ service_unit_for_target() {
         backup)
             printf '%s\n' "$APP_NAME-backup.service"
             ;;
-        game8|game8-post)
-            printf '%s\n' "$APP_NAME-game8-post.service"
-            ;;
         *.service)
             printf '%s\n' "$target"
             ;;
@@ -189,9 +170,6 @@ systemd_unit_for_target() {
             ;;
         backup-timer)
             printf '%s\n' "$APP_NAME-backup.timer"
-            ;;
-        game8-timer|game8-post-timer)
-            printf '%s\n' "$APP_NAME-game8-post.timer"
             ;;
         *.timer)
             printf '%s\n' "$target"
@@ -273,8 +251,7 @@ logs_command() {
 timers_command() {
     systemctl list-timers \
         "$APP_NAME-update.timer" \
-        "$APP_NAME-backup.timer" \
-        "$APP_NAME-game8-post.timer"
+        "$APP_NAME-backup.timer"
 }
 
 remove_systemd_units() {
@@ -353,97 +330,6 @@ notify_command() {
 
     notify_discord "$message"
     return 0
-}
-
-game8_post_enabled() {
-    case "$GAME8_POST_ENABLED" in
-        1|true|TRUE|True|yes|YES|Yes|on|ON|On|enabled|ENABLED|Enabled)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
-
-game8_post() {
-    if ! game8_post_enabled; then
-        echo "Game8 POST は無効です。"
-        return 0
-    fi
-
-    require_game8_post_deps
-
-    local page_url endpoint csrf_token name body http_status
-    page_url="${GAME8_POST_BASE_URL}/${GAME8_POST_ARCHIVE_ID}"
-    endpoint="${GAME8_POST_BASE_URL}/api/archive_comments"
-    name="${GAME8_POST_NAME:-}"
-    body="${GAME8_POST_BODY:-}"
-
-    csrf_token="$(
-        curl \
-            --fail \
-            --silent \
-            --show-error \
-            --location \
-            --user-agent "$CURL_USER_AGENT" \
-            --header 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8' \
-            --header 'Accept-Language: ja,en-US;q=0.9,en;q=0.8' \
-            --header 'Sec-CH-UA: "Google Chrome";v="149", "Chromium";v="149", "Not.A/Brand";v="24"' \
-            --header 'Sec-CH-UA-Mobile: ?0' \
-            --header 'Sec-CH-UA-Platform: "Windows"' \
-            --header 'Sec-Fetch-Dest: document' \
-            --header 'Sec-Fetch-Mode: navigate' \
-            --header 'Sec-Fetch-Site: none' \
-            --header 'Sec-Fetch-User: ?1' \
-            --header 'Upgrade-Insecure-Requests: 1' \
-            "$page_url" \
-            | sed -nE 's/.*<meta name="csrf-token" content="([^"]+)".*/\1/p' \
-            | head -n 1
-    )"
-
-    if [[ -z "$csrf_token" ]]; then
-        echo "Game8 POST に失敗しました: csrf-token を取得できませんでした: $page_url" >&2
-        exit 1
-    fi
-
-    http_status="$(
-        curl \
-            --silent \
-            --show-error \
-            --location \
-            --request POST \
-            --user-agent "$CURL_USER_AGENT" \
-            --header 'Accept: application/json, text/javascript, */*; q=0.01' \
-            --header 'Accept-Language: ja,en-US;q=0.9,en;q=0.8' \
-            --header 'Sec-CH-UA: "Google Chrome";v="149", "Chromium";v="149", "Not.A/Brand";v="24"' \
-            --header 'Sec-CH-UA-Mobile: ?0' \
-            --header 'Sec-CH-UA-Platform: "Windows"' \
-            --header 'Sec-Fetch-Dest: empty' \
-            --header 'Sec-Fetch-Mode: cors' \
-            --header 'Sec-Fetch-Site: same-origin' \
-            --header 'X-Requested-With: XMLHttpRequest' \
-            --header "Origin: $GAME8_POST_BASE_URL" \
-            --header "X-CSRF-Token: $csrf_token" \
-            --referer "$page_url" \
-            --form "archive_comment[archive_id]=$GAME8_POST_ARCHIVE_ID" \
-            --form "archive_comment[name]=$name" \
-            --form "archive_comment[body]=$body" \
-            --write-out "%{http_code}" \
-            --output /dev/null \
-            "$endpoint"
-    )"
-
-    case "$http_status" in
-        200|201|204)
-            echo "Game8 POST が完了しました: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name"
-            ;;
-        *)
-            echo "Game8 POST に失敗しました: HTTP $http_status archive_id=$GAME8_POST_ARCHIVE_ID name=$name" >&2
-            exit 1
-            ;;
-    esac
-
 }
 
 warn_before_update() {
@@ -950,12 +836,11 @@ configure_systemd() {
         exit 1
     fi
 
-    local run_user run_group interval backup_on_calendar game8_post_interval
+    local run_user run_group interval backup_on_calendar
     run_user="${SUDO_USER:-$(id -un)}"
     run_group="$(id -gn "$run_user")"
     interval="${CHECK_INTERVAL:-6h}"
     backup_on_calendar="${BACKUP_ON_CALENDAR:-*-*-* 04:30:00}"
-    game8_post_interval="${GAME8_POST_INTERVAL:-8h}"
 
     install_server
     chown -R "$run_user:$run_group" "$BASE_DIR" "$DEST"
@@ -1043,51 +928,16 @@ Persistent=true
 WantedBy=timers.target
 EOF
 
-    systemctl_disable_now "$APP_NAME-comment-check.timer"
-    remove_systemd_units \
-        "$APP_NAME-comment-check.service" \
-        "$APP_NAME-comment-check.timer"
-
-    cat >"$(systemd_unit_path "$APP_NAME-game8-post.service")" <<EOF
-[Unit]
-Description=Game8 POST 定期実行
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-Environment=BDS_CONFIG=$CONFIG_FILE
-Nice=10
-IOSchedulingClass=idle
-TimeoutStartSec=2min
-ExecStart=$SCRIPT_PATH game8-post
-EOF
-
-    cat >"$(systemd_unit_path "$APP_NAME-game8-post.timer")" <<EOF
-[Unit]
-Description=Game8 POST 定期実行
-
-[Timer]
-OnBootSec=15min
-OnUnitActiveSec=$game8_post_interval
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-EOF
-
     systemctl daemon-reload
     systemctl_enable "$APP_NAME.service"
     systemctl_enable_now \
         "$APP_NAME-update.timer" \
-        "$APP_NAME-backup.timer" \
-        "$APP_NAME-game8-post.timer"
+        "$APP_NAME-backup.timer"
 
     echo "systemd 設定を更新しました:"
     echo "  $SCRIPT_PATH status"
     echo "  $SCRIPT_PATH status update-timer"
     echo "  $SCRIPT_PATH status backup-timer"
-    echo "  $SCRIPT_PATH status game8-timer"
 }
 
 uninstall_systemd() {
@@ -1097,8 +947,6 @@ uninstall_systemd() {
     fi
 
     systemctl_disable_now \
-        "$APP_NAME-game8-post.timer" \
-        "$APP_NAME-comment-check.timer" \
         "$APP_NAME-backup.timer" \
         "$APP_NAME-update.timer" \
         "$APP_NAME.service"
@@ -1107,11 +955,7 @@ uninstall_systemd() {
         "$APP_NAME-update.service" \
         "$APP_NAME-update.timer" \
         "$APP_NAME-backup.service" \
-        "$APP_NAME-backup.timer" \
-        "$APP_NAME-game8-post.service" \
-        "$APP_NAME-game8-post.timer" \
-        "$APP_NAME-comment-check.service" \
-        "$APP_NAME-comment-check.timer"
+        "$APP_NAME-backup.timer"
     systemctl daemon-reload
     echo "systemd unit を削除しました。"
 }
@@ -1136,9 +980,6 @@ case "$cmd" in
         ;;
     backup)
         backup_server
-        ;;
-    game8-post)
-        game8_post
         ;;
     restore)
         restore_server "${2:-}"

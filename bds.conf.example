@@ -9,11 +9,11 @@
 # 空文字列にすると自動変更しません。
 SERVER_NAME_FORMAT="RvoSMP %v"
 
-# 更新確認。timer 関連の値を変えた場合は ./bds.sh install-systemd を再実行します。
+# 更新確認。timer 関連の値を変えた場合は sudo ./bds.sh restart を再実行します。
 CHECK_INTERVAL=6h
 UPDATE_NOTICE_SECONDS=300
 
-# バックアップ。BACKUP_ON_CALENDAR を変えた場合は ./bds.sh install-systemd を再実行します。
+# バックアップ。BACKUP_ON_CALENDAR を変えた場合は sudo ./bds.sh restart を再実行します。
 BACKUP_DIR="$BASE_DIR/backups"
 BACKUP_RETENTION_DAYS=14
 BACKUP_ON_CALENDAR="*-*-* 04:30:00"
@@ -22,11 +22,3 @@ BACKUP_MIN_FREE_MB=1024
 
 # Discord 通知。Webhook URL を設定する場合、このファイルは Git 管理しないでください。
 DISCORD_WEBHOOK_URL=
-
-# Game8 POST。GAME8_POST_INTERVAL を変えた場合は ./bds.sh install-systemd を再実行します。
-GAME8_POST_ENABLED=0
-GAME8_POST_INTERVAL=8h
-GAME8_POST_NAME=
-GAME8_POST_BODY=$(cat <<'EOF'
-EOF
-)
