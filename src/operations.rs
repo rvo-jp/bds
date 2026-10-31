@@ -356,17 +356,57 @@ pub fn recover(c: &Config) -> Result<()> {
 pub fn check(c: &Config) -> Result<Option<releases::Release>> {
     ensure_import_complete(c)?;
     let (id, url) = releases::latest()?;
+    check_release(c, &id, &url)
+}
+fn check_release(c: &Config, id: &str, url: &str) -> Result<Option<releases::Release>> {
     if util::read_json::<releases::Release>(&c.state().join("rejected-release.json"))
         .is_ok_and(|r| r.id == id)
     {
         return Ok(None);
     }
-    if releases::current(c).ok().as_deref() == Some(&id) {
+    if !releases::newer(id, &releases::current(c)?)? {
         return Ok(None);
     }
-    let r = releases::download(c, &id, &url)?;
+    let r = releases::download(c, id, url)?;
     util::json(&c.state().join("pending-release.json"), &r, 0o644)?;
     Ok(Some(r))
+}
+pub fn auto_update(c: &Config) -> Result<Option<snapshots::Snapshot>> {
+    auto_update_with(c, releases::latest)
+}
+/// The version source is supplied separately so acceptance tests can exercise
+/// the real maintenance workflow with cached releases and no external downloads.
+pub fn auto_update_with(
+    c: &Config,
+    latest: impl FnOnce() -> Result<(String, String)>,
+) -> Result<Option<snapshots::Snapshot>> {
+    let _lock = util::Lock::acquire(
+        &c.paths.store.join("maintenance.lock"),
+        c.maintenance.lock_wait_seconds,
+    )?;
+    maintenance_preflight(c)?;
+    let (id, url) = latest()?;
+    let Some(candidate) = check_release(c, &id, &url)? else {
+        return Ok(None);
+    };
+    // A timer must not undo a manual stop or interfere with startup/shutdown.
+    if util::prop(&c.server.unit, "ActiveState")? != "active" {
+        eprintln!(
+            "更新版{}を取得しました。サーバーが稼働していないため適用を保留します",
+            candidate.id
+        );
+        return Ok(None);
+    }
+    maintenance_locked(c, Some(candidate)).map(Some)
+}
+fn maintenance_preflight(c: &Config) -> Result<()> {
+    no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
+    ensure!(
+        !transaction_path(c).exists(),
+        "中断記録があります。recoverを実行してください"
+    );
+    Ok(())
 }
 pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::Snapshot> {
     let _lock = util::Lock::acquire(
@@ -377,25 +417,22 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
             0
         },
     )?;
-    no_pending_reboot(c)?;
-    ensure_import_complete(c)?;
-    ensure!(
-        !transaction_path(c).exists(),
-        "中断記録があります。recoverを実行してください"
-    );
+    maintenance_preflight(c)?;
     let candidate = if update {
         let rejected = c.state().join("rejected-release.json");
         if rejected.exists() {
             fs::remove_file(rejected)?;
         }
         check(c)?
-    } else if daily {
-        util::read_json::<releases::Release>(&c.state().join("pending-release.json"))
-            .ok()
-            .filter(|r| releases::current(c).ok().as_deref() != Some(&r.id))
     } else {
         None
     };
+    maintenance_locked(c, candidate)
+}
+fn maintenance_locked(
+    c: &Config,
+    candidate: Option<releases::Release>,
+) -> Result<snapshots::Snapshot> {
     let was_active = active(c)?;
     if !was_active {
         ensure_stopped(c)?;
@@ -442,6 +479,10 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
                 releases::activate(c, &release.id)?;
             }
             start(c)?;
+            if candidate.is_some() {
+                fs::remove_file(c.state().join("pending-release.json"))?;
+                fs::File::open(c.state())?.sync_all()?;
+            }
         }
         tx_clear(c)?;
         Ok(snapshot)
@@ -457,7 +498,14 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
             }
             let _ = util::webhook(
                 &c.paths.webhook_file,
-                &format!("バックアップが完了しました: {}", s.id),
+                &if let Some(release) = candidate.filter(|_| was_active) {
+                    format!(
+                        "Minecraftの更新が完了しました: {} → {}。バックアップ: {}",
+                        s.release, release.id, s.id
+                    )
+                } else {
+                    format!("バックアップが完了しました: {}", s.id)
+                },
             );
             Ok(s)
         }

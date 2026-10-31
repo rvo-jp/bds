@@ -79,11 +79,11 @@ sudo systemctl start bds-discord.service
 
 ```sh
 sudo systemctl enable bds.service bds-discord.service
-sudo systemctl enable --now bds-daily.timer bds-update-check.timer
+sudo systemctl enable --now bds-daily.timer bds-update.timer
 sudo systemctl list-timers 'bds-*'
 ```
 
-旧タイマーが無効で、新しい日次処理が日本時間04:30になっていることを確認します。翌朝の処理後もアプリから接続できることを確認してください。
+旧タイマーが無効で、新しい日次処理が日本時間04:30、更新が毎時00分＋最大5分の遅延になっていることを確認します。更新タイマーは新バージョンの取得だけでなく、予告・停止・バックアップ・適用・起動確認まで行います。翌朝の処理後もアプリから接続できることを確認してください。
 
 検証後、旧ワールドやtar.gzバックアップの必要分をデータ保管先へ移します。旧形式のtar.gzを、新形式の`/var/lib/bds/backups`直下へ混在させないでください。例えば旧形式は`/var/backups/bds-tar`へまとめます。新形式のバックアップは復旧に必要なMinecraft本体と合わせて保管します。
 

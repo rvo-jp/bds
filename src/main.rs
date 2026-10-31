@@ -11,7 +11,7 @@ fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "bdsctl [--config /etc/bds/config.toml] COMMAND\n\nstatus | console TEXT | backup | daily | restart | reboot | update | check-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
+            "bdsctl [--config /etc/bds/config.toml] COMMAND\n\nstatus | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
         );
         return Ok(());
     }
@@ -137,6 +137,9 @@ fn run() -> Result<()> {
                 }
                 "update" => {
                     operations::maintenance(&c, true, false)?;
+                }
+                "auto-update" => {
+                    operations::auto_update(&c)?;
                 }
                 "check-update" => {
                     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;

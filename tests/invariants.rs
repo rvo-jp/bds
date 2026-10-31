@@ -125,6 +125,14 @@ fn rejects_archive_traversal() {
     );
 }
 #[test]
+fn update_versions_are_compared_numerically_without_downgrading() {
+    assert!(releases::newer("1.26.10.1", "1.26.9.99").unwrap());
+    assert!(!releases::newer("1.26.9.99", "1.26.10.1").unwrap());
+    assert!(!releases::newer("1.26.10.1", "1.26.10.1").unwrap());
+    assert!(releases::newer("invalid", "1.26.10.1").is_err());
+    assert!(releases::newer("1.26.10.1", "invalid").is_err());
+}
+#[test]
 fn confirmation_owner_expiry_cancel_and_replay() {
     let mut f = Fixture::new();
     f.c.discord.application_id = "1".into();

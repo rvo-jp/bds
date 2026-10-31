@@ -100,6 +100,17 @@ pub fn version_url(url: &str) -> Result<String> {
     );
     Ok(version.into())
 }
+pub fn newer(candidate: &str, current: &str) -> Result<bool> {
+    fn parts(version: &str) -> Result<Vec<u64>> {
+        let parts = version
+            .split('.')
+            .map(str::parse::<u64>)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        ensure!(parts.len() == 4, "BDSバージョンは4つの数値が必要です");
+        Ok(parts)
+    }
+    Ok(parts(candidate)? > parts(current)?)
+}
 fn public_directories(root: &Path) -> Result<()> {
     for e in fs::read_dir(root)? {
         let e = e?;

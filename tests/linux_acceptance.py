@@ -3,7 +3,7 @@
 Does not operate bds.service, existing worlds, Discord endpoints or OS reboot.
 Run as root: python3 tests/linux_acceptance.py BDSCTL FAKE_BDS
 """
-import hashlib,json,os,pathlib,pwd,shutil,socket,subprocess,sys,tempfile,time,uuid
+import fcntl,hashlib,json,os,pathlib,pwd,shutil,socket,subprocess,sys,tempfile,time,uuid
 
 def run(*args,ok=True,timeout=90):
     result=subprocess.run([str(a) for a in args],capture_output=True,text=True,timeout=timeout)
@@ -17,7 +17,7 @@ def port():
 
 def main():
     assert os.geteuid()==0 and sys.platform=='linux'
-    source=pathlib.Path(sys.argv[1]).resolve();fake=pathlib.Path(sys.argv[2]).resolve()
+    source=pathlib.Path(sys.argv[1]).resolve();fake=pathlib.Path(sys.argv[2]).resolve();updater=fake.with_name("auto_update")
     token=uuid.uuid4().hex[:8];user='bds-test-'+token;unit='bds-smoke-'+token+'.service';receiver='bds-smoke-discord-'+token+'.service'
     root=pathlib.Path(tempfile.mkdtemp(prefix='bdsctl-smoke-',dir='/run'));root.chmod(0o755)
     units=[];created=False;binary=root/'bdsctl';shutil.copy2(source,binary)
@@ -25,6 +25,13 @@ def main():
     def check(label):report['checks'].append(label);print('PASS',label,flush=True)
     def ctl(*args,ok=True):return run(binary,'--config',root/'config.toml',*args,ok=ok)
     def status():return json.loads((root/'runtime/status.json').read_text())
+    def updating(version,ok=True):return run(updater,root/'config.toml',version,ok=ok)
+    def backup_ids():return {p.name for p in (root/'store/backups').iterdir() if not p.name.startswith('.')}
+    def cache_release(version,mode=None):
+        path=root/'releases'/version;shutil.copytree(release,path,symlinks=True)
+        (path/'release.json').write_text(json.dumps({'id':version,'url':'fixture','sha256':'fixture'}))
+        if mode:(path/'mode').write_text(mode)
+        return path
     try:
         run('useradd','--system','--user-group','--no-create-home','--shell','/usr/sbin/nologin',user);created=True;account=pwd.getpwnam(user)
         for name in ['store','releases','runtime','diagnostics','discord']:(root/name).mkdir()
@@ -73,6 +80,9 @@ allowed_users = ["642606556151545857"]
             if original=='bds-discord.service':text=text.replace('User=bds-discord','User='+user).replace('Group=bds-discord','Group='+user)
             path=pathlib.Path('/run/systemd/system')/name;path.write_text(text);units.append(name)
         run('systemctl','daemon-reload');run('systemd-analyze','verify',*[pathlib.Path('/run/systemd/system')/x for x in units])
+        run('systemd-analyze','verify',*sorted((root/'generated').glob('*.service')),*sorted((root/'generated').glob('*.timer')))
+        assert '*:00:00 Asia/Tokyo' in (root/'generated/bds-update.timer').read_text()
+        assert ' auto-update' in (root/'generated/bds-update.service').read_text()
         run('systemctl','start',unit,receiver);assert status()['ready'];check('systemd READY requires owned TCP listener and console response')
         # Both resident Rust processes, excluding the fake Minecraft child.
         pids=[int(run('systemctl','show',u,'-p','MainPID','--value').stdout) for u in units]
@@ -137,9 +147,12 @@ allowed_users = ["642606556151545857"]
         assert (snapshot_dir/'data/worlds/data').stat().st_ino!=(data/'worlds/data').stat().st_ino
         ctl('verify',sid);ctl('export',sid,root/'snapshot.tar.zst');run('zstd','-t',root/'snapshot.tar.zst');check('snapshot verifies and exports through one zstd process')
         (data/'worlds/data').write_text('changed');ctl('restore',sid);assert (data/'worlds/data').read_text()=='original-world';assert status()['ready'];check('restore copies independent world and restarts successfully')
-        bad=root/'releases/1.2.3.5';shutil.copytree(release,bad,symlinks=True);(bad/'mode').write_text('no-listener');(bad/'release.json').write_text(json.dumps({'id':'1.2.3.5','url':'fixture','sha256':'fixture'}))
-        (root/'store/state/pending-release.json').write_text((bad/'release.json').read_text())
-        result=ctl('daily',ok=False);assert result.returncode!=0,result.stdout;assert os.readlink(root/'releases/current')=='1.2.3.4';assert status()['ready'];assert (root/'store/state/rejected-release.json').is_file();assert (data/'worlds/data').read_text()=='original-world';check('failed update rolls back world and executable after bounded retries')
+        bad=cache_release('1.2.3.5','no-listener')
+        result=updating('1.2.3.5',ok=False);assert result.returncode!=0,result.stdout;assert os.readlink(root/'releases/current')=='1.2.3.4';assert status()['ready'];assert (root/'store/state/rejected-release.json').is_file();assert (data/'worlds/data').read_text()=='original-world';check('failed update rolls back world and executable after bounded retries')
+        invocation=status()['invocation'];existing=backup_ids();updating('1.2.3.5')
+        assert status()['invocation']==invocation and backup_ids()==existing
+        assert json.loads((root/'store/state/rejected-release.json').read_text())['id']=='1.2.3.5'
+        check('hourly checks never retry a rejected release or interrupt the recovered server')
         assert any((root/'diagnostics').iterdir());check('failed startup leaves persistent diagnostic evidence')
         run('systemctl','stop',unit);assert status()['stopped'] and status()['child_exit']==0
         transaction={'id':'simulated-interruption','kind':'maintenance','phase':'applying','old_release':'1.2.3.4','snapshot':sid,'was_active':True,'owner':99999999,'owner_start':'not-running','boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
@@ -148,6 +161,43 @@ allowed_users = ["642606556151545857"]
         # Half-replaced directory after a power loss is recoverable too.
         run('systemctl','stop',unit);(root/'store/state/transaction.json').write_text(json.dumps(transaction));shutil.rmtree(data)
         ctl('recover');assert (data/'worlds/data').read_text()=='original-world';check('interrupted data-directory replacement is recoverable')
+        # The hourly worker uses the full production workflow with a local version source.
+        run('systemctl','start',unit);assert status()['ready']
+        invocation=status()['invocation'];existing=backup_ids()
+        updating('1.2.3.4');assert status()['invocation']==invocation and backup_ids()==existing
+        result=updating('offline',ok=False);assert result.returncode
+        assert status()['invocation']==invocation and backup_ids()==existing
+        check('unchanged versions and unavailable version source do not stop BDS or create backups')
+        cache_release('1.2.3.7');updating('1.2.3.7')
+        assert status()['ready'] and status()['invocation']!=invocation
+        assert os.readlink(root/'releases/current')=='1.2.3.7'
+        assert (data/'worlds/data').read_text()=='original-world'
+        added=backup_ids()-existing;assert len(added)==1
+        before_update=json.loads((root/'store/backups'/added.pop()/'snapshot.json').read_text());assert before_update['release']=='1.2.3.4'
+        assert not (root/'store/state/pending-release.json').exists()
+        check('new version is backed up, activated and readiness-checked during the hourly run')
+        invocation=status()['invocation'];existing=backup_ids()
+        updating('1.2.3.7');updating('1.2.3.4')
+        assert status()['invocation']==invocation and backup_ids()==existing
+        check('repeated checks neither restart the same version nor downgrade to an older release')
+        with (root/'store/maintenance.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            process=subprocess.Popen([str(updater),str(root/'config.toml'),'1.2.3.7'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+            try:
+                time.sleep(.2);assert process.poll() is None
+            finally:fcntl.flock(lock,fcntl.LOCK_UN)
+            out,err=process.communicate(timeout=5);assert process.returncode==0,(out,err)
+        assert status()['invocation']==invocation and backup_ids()==existing
+        check('hourly update waits for concurrent maintenance and rechecks before acting')
+        run('systemctl','stop',unit);cache_release('1.2.3.8');updating('1.2.3.8')
+        assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
+        assert os.readlink(root/'releases/current')=='1.2.3.7' and backup_ids()==existing
+        assert json.loads((root/'store/state/pending-release.json').read_text())['id']=='1.2.3.8'
+        check('hourly update stages files without starting a manually stopped server')
+        ctl('daily');assert os.readlink(root/'releases/current')=='1.2.3.7'
+        assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
+        assert backup_ids()-existing
+        check('daily backup remains independent and does not apply a staged update')
         # Initial import retries use a durable record, not deletion of existing data.
         imported=root/'imported';old=root/'old';(old/'worlds').mkdir(parents=True)
         (old/'worlds/data').write_text('import-world');(old/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n');(old/'.installed-version').write_text('1.2.3.4')
@@ -170,7 +220,8 @@ allowed_users = ["642606556151545857"]
         marker.write_text(json.dumps(record));importing('recover');assert not marker.exists()
         check('initial import recovers interruption before publication and after activation')
         # A status write failure must not deadlock BDS on its stdout pipe.
-        (release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']
+        active_release=(root/'releases/current').resolve()
+        (active_release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']
         status_file=root/'runtime/status.json';status_file.unlink();status_file.mkdir()
         try:
             until=time.monotonic()+10
@@ -181,7 +232,7 @@ allowed_users = ["642606556151545857"]
             assert state=='failed',state
             assert run('systemctl','show',unit,'-p','MainPID','--value').stdout.strip()=='0'
         finally:
-            status_file.rmdir();(release/'mode').unlink()
+            status_file.rmdir();(active_release/'mode').unlink()
         check('supervisor error still drains large stop output and BDS exits without a forced kill')
         print(json.dumps(report,ensure_ascii=False,indent=2),flush=True)
         if os.environ.get('BDS_ACCEPTANCE_REPORT'):pathlib.Path(os.environ['BDS_ACCEPTANCE_REPORT']).write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')

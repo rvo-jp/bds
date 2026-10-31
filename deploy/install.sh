@@ -41,5 +41,9 @@ mv /usr/local/bin/bdsctl.new /usr/local/bin/bdsctl
 install -m 0644 "$artifact_dir/BUILD.json" /usr/local/share/bdsctl/BUILD.json
 install -m 0644 "$staging/"*.service "$staging/"*.timer /etc/systemd/system/
 install -m 0644 "$staging/50-bds-discord.rules" /etc/polkit-1/rules.d/50-bds-discord.rules
+if [ -f /etc/systemd/system/bds-update-check.timer ]; then
+    systemctl disable bds-update-check.timer
+fi
+rm -f /etc/systemd/system/bds-update-check.timer /etc/systemd/system/bds-update-check.service
 systemctl daemon-reload
 printf '%s\n' 'インストール完了。サービスの起動・有効化は行っていません。'
