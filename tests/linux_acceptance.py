@@ -170,7 +170,7 @@ allowed_users = ["642606556151545857"]
         marker.write_text(json.dumps(record));importing('recover');assert not marker.exists()
         check('initial import recovers interruption before publication and after activation')
         # A status write failure must not deadlock BDS on its stdout pipe.
-        (release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit);run('systemctl','start',unit);assert status()['ready']
+        (release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']
         status_file=root/'runtime/status.json';status_file.unlink();status_file.mkdir()
         try:
             until=time.monotonic()+10
