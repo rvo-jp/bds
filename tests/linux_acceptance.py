@@ -269,7 +269,8 @@ allowed_users = ["642606556151545857"]
         # A failed service must never turn its world into a successful daily generation.
         existing=backup_ids();success=(root/'store/state/maintenance-success.json').read_bytes()
         active_release=(root/'releases/current').resolve();(active_release/'mode').write_text('no-console')
-        run('systemctl','reset-failed',unit);run('systemctl','start',unit,ok=False)
+        # A clean inactive unit may have been garbage-collected by systemd.
+        run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit,ok=False)
         until=time.monotonic()+15
         while time.monotonic()<until:
             state=run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()
