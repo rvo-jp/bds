@@ -1,6 +1,8 @@
+pub mod admin;
 pub mod config;
 pub mod discord;
 pub mod operations;
+pub mod recovery;
 pub mod releases;
 pub mod setup;
 pub mod snapshots;

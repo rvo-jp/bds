@@ -132,6 +132,7 @@ pub fn systemctl(args: &[&str]) -> Result<()> {
 }
 pub fn prop(unit: &str, key: &str) -> Result<String> {
     let o = Command::new("systemctl")
+        .env("TZ", "Asia/Tokyo")
         .args(["show", unit, &format!("--property={key}"), "--value"])
         .output()?;
     ensure!(o.status.success(), "サービス情報を取得できません");

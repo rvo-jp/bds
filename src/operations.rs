@@ -39,7 +39,7 @@ fn ensure_import_complete(c: &Config) -> Result<()> {
     );
     Ok(())
 }
-fn finish_import(c: &Config) -> Result<()> {
+pub(crate) fn finish_import(c: &Config) -> Result<()> {
     let tx: ImportTransaction = util::read_json(&import_path(c))?;
     identifier(&tx.release)?;
     identifier(&tx.stage)?;
@@ -150,6 +150,7 @@ fn no_pending_reboot(c: &Config) -> Result<()> {
     Ok(())
 }
 pub fn start(c: &Config) -> Result<()> {
+    crate::admin::ensure_available(c)?;
     ensure_import_complete(c)?;
     let p = c.state().join("start-permit.json");
     util::json(
@@ -185,6 +186,9 @@ fn start_wait(c: &Config) -> Result<()> {
         std::thread::sleep(Duration::from_millis(500));
     }
     bail!("起動確認が期限を超えました")
+}
+pub fn maintenance_notice(c: &Config, message: &str) -> Result<()> {
+    notice(c, message)
 }
 fn notice(c: &Config, message: &str) -> Result<()> {
     if active(c)? {
@@ -325,9 +329,10 @@ pub fn recover(c: &Config) -> Result<()> {
         for (root, prefixes) in [
             (
                 c.paths.store.clone(),
-                vec![".restore-", ".import-", ".legacy-"],
+                vec![".restore-", ".import-", ".legacy-", ".recovery-"],
             ),
             (c.snapshots(), vec![".partial-"]),
+            (c.paths.releases.clone(), vec![".recovery-"]),
         ] {
             if root.is_dir() {
                 for e in fs::read_dir(root)? {
@@ -379,6 +384,10 @@ pub fn auto_update_with(
         &c.paths.store.join("maintenance.lock"),
         c.maintenance.lock_wait_seconds,
     )?;
+    if crate::admin::in_maintenance(c) {
+        eprintln!("保守中のため更新確認をスキップします");
+        return Ok(None);
+    }
     maintenance_preflight(c)?;
     let (id, url) = latest()?;
     let Some(candidate) = check_release(c, &id, &url)? else {
@@ -392,9 +401,10 @@ pub fn auto_update_with(
         );
         return Ok(None);
     }
-    maintenance_locked(c, Some(candidate)).map(Some)
+    maintenance_locked(c, Some(candidate), "update").map(Some)
 }
 fn maintenance_preflight(c: &Config) -> Result<()> {
+    crate::admin::ensure_available(c)?;
     no_pending_reboot(c)?;
     ensure_import_complete(c)?;
     ensure!(
@@ -422,16 +432,28 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
     } else {
         None
     };
-    maintenance_locked(c, candidate)
+    maintenance_locked(
+        c,
+        candidate,
+        if update {
+            "update"
+        } else if daily {
+            "daily"
+        } else {
+            "manual"
+        },
+    )
 }
 fn maintenance_locked(
     c: &Config,
     candidate: Option<releases::Release>,
+    reason: &str,
 ) -> Result<snapshots::Snapshot> {
     let was_active = active(c)?;
     if !was_active {
         ensure_stopped(c)?;
     }
+    capacity_preflight(c, candidate.as_ref())?;
     notice(
         c,
         if candidate.is_some() {
@@ -453,7 +475,7 @@ fn maintenance_locked(
                     .context("必要容量が大きすぎます")?,
             )?;
         }
-        let snapshot = snapshots::capture(c, &tx.old_release)?;
+        let snapshot = snapshots::capture_reason(c, &tx.old_release, reason)?;
         tx.snapshot = Some(snapshot.id.clone());
         tx.phase = "copied".into();
         tx_save(c, &tx)?;
@@ -484,6 +506,11 @@ fn maintenance_locked(
     })();
     match result {
         Ok(s) => {
+            util::json(
+                &c.state().join("maintenance-success.json"),
+                &serde_json::json!({"at": crate::admin::jst(util::now()), "snapshot": s.id, "reason": s.reason}),
+                0o644,
+            )?;
             if let Err(error) = snapshots::prune(c).and_then(|_| releases::prune(c, &[])) {
                 eprintln!("世代整理に失敗しました: {error:#}");
                 let _ = util::webhook(
@@ -534,6 +561,7 @@ fn maintenance_locked(
 }
 pub fn restart(c: &Config) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+    crate::admin::ensure_available(c)?;
     no_pending_reboot(c)?;
     ensure_import_complete(c)?;
     ensure!(
@@ -550,6 +578,7 @@ pub fn restart(c: &Config) -> Result<()> {
 }
 pub fn reboot(c: &Config) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+    crate::admin::ensure_available(c)?;
     no_pending_reboot(c)?;
     ensure_import_complete(c)?;
     ensure!(
@@ -619,7 +648,7 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
                 .checked_mul(2)
                 .context("必要容量が大きすぎます")?,
         )?;
-        let safety = snapshots::capture(c, &tx.old_release)?;
+        let safety = snapshots::capture_reason(c, &tx.old_release, "safety")?;
         snapshots::protect(c, &safety.id, true)?;
         tx.snapshot = Some(safety.id);
         tx.phase = "restoring".into();
@@ -794,4 +823,77 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
         let _ = fs::remove_dir_all(temporary);
     }
     result
+}
+
+/// Metadata-only estimate while live; the offline copy checks capacity again.
+pub fn capacity_preflight(c: &Config, candidate: Option<&releases::Release>) -> Result<()> {
+    if let Some(r) = candidate {
+        identifier(&r.id)?;
+        let saved: releases::Release =
+            util::read_json(&c.paths.releases.join(&r.id).join("release.json"))?;
+        ensure!(
+            saved.id == r.id
+                && c.paths
+                    .releases
+                    .join(&r.id)
+                    .join("bedrock_server")
+                    .is_file(),
+            "更新候補が不完全です"
+        );
+    }
+    let bytes = util::tree_bytes(&c.data())?;
+    util::reserve(
+        c,
+        bytes
+            .checked_mul(if candidate.is_some() { 2 } else { 1 })
+            .context("必要容量が大きすぎます")?,
+    )
+}
+pub(crate) fn publish_import(c: &Config, release: String, stage: &Path) -> Result<()> {
+    util::sync_tree(stage)?;
+    util::json(
+        &import_path(c),
+        &ImportTransaction {
+            release,
+            stage: stage
+                .file_name()
+                .context("取り込み先が不正です")?
+                .to_str()
+                .context("パスが不正です")?
+                .into(),
+        },
+        0o600,
+    )?;
+    finish_import(c)
+}
+
+pub fn recover_locked(c: &Config) -> Result<()> {
+    maintenance_preflight_records(c)?;
+    if let Ok(id) = releases::current(c) {
+        releases::prepare(c, &id)?;
+        chown_data(c)?;
+    }
+    Ok(())
+}
+fn maintenance_preflight_records(c: &Config) -> Result<()> {
+    no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
+    ensure!(
+        !transaction_path(c).exists(),
+        "中断記録があります。先にrecoverしてください"
+    );
+    Ok(())
+}
+
+pub fn daily(c: &Config) -> Result<Option<snapshots::Snapshot>> {
+    let _lock = util::Lock::acquire(
+        &c.paths.store.join("maintenance.lock"),
+        c.maintenance.lock_wait_seconds,
+    )?;
+    if crate::admin::in_maintenance(c) {
+        println!("保守中のため日次バックアップをスキップします");
+        return Ok(None);
+    }
+    maintenance_preflight(c)?;
+    maintenance_locked(c, None, "daily").map(Some)
 }

@@ -101,6 +101,12 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
     if !authorized(c, v) {
         return Ok((message("この操作を実行する権限がありません。"), None));
     }
+    if crate::admin::in_maintenance(c) {
+        return Ok((
+            message("管理者が保守作業中です。終了まで再起動できません。"),
+            None,
+        ));
+    }
     let user = v["member"]["user"]["id"]
         .as_str()
         .context("ユーザーIDがありません")?;

@@ -25,7 +25,12 @@ pub struct Snapshot {
     pub release: String,
     pub created: u64,
     pub protected: bool,
+    #[serde(default = "manual_reason")]
+    pub reason: String,
     pub files: BTreeMap<String, FileRecord>,
+}
+fn manual_reason() -> String {
+    "manual".into()
 }
 pub fn list(c: &Config) -> Result<Vec<Snapshot>> {
     let mut out = vec![];
@@ -68,6 +73,13 @@ pub fn safe_relative(path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn capture(c: &Config, release: &str) -> Result<Snapshot> {
+    capture_reason(c, release, "manual")
+}
+pub fn capture_reason(c: &Config, release: &str, reason: &str) -> Result<Snapshot> {
+    ensure!(
+        ["daily", "manual", "update", "safety"].contains(&reason),
+        "保存理由が不正です"
+    );
     identifier(release)?;
     fs::create_dir_all(c.snapshots())?;
     let paths = util::files(&c.data())?;
@@ -139,6 +151,7 @@ pub fn capture(c: &Config, release: &str) -> Result<Snapshot> {
             release: release.into(),
             created: util::now(),
             protected: false,
+            reason: reason.into(),
             files,
         };
         util::json(&partial.join("snapshot.json"), &snapshot, 0o644)?;
@@ -185,10 +198,19 @@ pub fn prepare_restore(c: &Config, id: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 pub fn prune(c: &Config) -> Result<()> {
-    let mut eligible: Vec<_> = list(c)?.into_iter().filter(|s| !s.protected).collect();
-    let n = eligible.len().saturating_sub(c.maintenance.retention);
-    for s in eligible.drain(..n) {
-        fs::remove_dir_all(c.snapshots().join(s.id))?;
+    let all = list(c)?;
+    for (daily, limit) in [
+        (true, c.maintenance.retention),
+        (false, c.maintenance.extra_retention),
+    ] {
+        let eligible: Vec<_> = all
+            .iter()
+            .filter(|s| !s.protected && (s.reason == "daily") == daily)
+            .collect();
+        let n = eligible.len().saturating_sub(limit);
+        for s in eligible.into_iter().take(n) {
+            fs::remove_dir_all(c.snapshots().join(&s.id))?;
+        }
     }
     Ok(())
 }
@@ -198,32 +220,5 @@ pub fn protect(c: &Config, id: &str, value: bool) -> Result<()> {
     util::json(&c.snapshots().join(id).join("snapshot.json"), &s, 0o644)
 }
 pub fn export(c: &Config, id: &str, to: &Path) -> Result<()> {
-    verify(c, id)?;
-    ensure!(!to.exists(), "出力ファイルが存在します");
-    let partial = to.with_extension(format!("partial-{}", util::nonce()?));
-    let mut zstd = Command::new("zstd")
-        .args(["-T1", "-1", "-q", "-o"])
-        .arg(&partial)
-        .stdin(std::process::Stdio::piped())
-        .spawn()?;
-    let result = (|| {
-        let input = zstd.stdin.take().unwrap();
-        let mut tar = tar::Builder::new(input);
-        tar.append_dir_all("data", c.snapshots().join(id).join("data"))?;
-        tar.append_path_with_name(
-            c.snapshots().join(id).join("snapshot.json"),
-            "snapshot.json",
-        )?;
-        tar.finish()?;
-        drop(tar);
-        ensure!(zstd.wait()?.success(), "圧縮に失敗しました");
-        fs::rename(&partial, to)?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = zstd.kill();
-        let _ = zstd.wait();
-        let _ = fs::remove_file(&partial);
-    }
-    result
+    crate::recovery::export(c, id, to)
 }

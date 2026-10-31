@@ -144,6 +144,27 @@ allowed_users = ["642606556151545857"]
         finally:
             for connection in slow:connection.close()
         check('slow HTTP bodies expire, concurrent requests progress and excess connections are rejected')
+        # Maintenance persists across separate CLI processes and blocks boot/manual/Discord starts.
+        invocation=status()['invocation'];ctl('maintenance-begin')
+        mode=root/'store/state/maintenance-mode.json';assert mode.exists()
+        assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
+        existing=backup_ids() if (root/'store/backups').exists() else set()
+        ctl('daily');updating('offline');assert ctl('restart',ok=False).returncode
+        run('systemctl','start',unit)
+        assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
+        assert (backup_ids() if (root/'store/backups').exists() else set())==existing
+        ctl('maintenance-end');assert not mode.exists() and status()['ready'] and status()['invocation']!=invocation
+        run('systemctl','stop',unit);ctl('maintenance-begin');ctl('maintenance-end')
+        assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
+        run('systemctl','start',unit)
+        check('persistent maintenance blocks scheduled and manual starts, then restores only previously running BDS')
+        # A preflight failure must not send announcements, stop BDS or create a transaction.
+        bad_config=root/'full-config.toml';bad_config.write_text((root/'config.toml').read_text().replace('minimum_free_mib = 0','minimum_free_mib = 18446744073709551615'))
+        invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
+        result=run(binary,'--config',bad_config,'backup',ok=False)
+        assert result.returncode and status()['invocation']==invocation and (data/'worlds/commands.log').read_bytes()==commands
+        assert not (root/'store/state/transaction.json').exists()
+        check('capacity preflight failure does not announce, stop or modify the running server')
         # Copy failure must not leave a previously running server stopped.
         fakebin=root/'fakebin';fakebin.mkdir();(fakebin/'rsync').write_text('#!/bin/sh\nexit 23\n');(fakebin/'rsync').chmod(0o755)
         failed=subprocess.run([str(binary),'--config',str(root/'config.toml'),'backup'],env={**os.environ,'PATH':str(fakebin)+':'+os.environ['PATH']},capture_output=True,text=True,timeout=60)
@@ -226,6 +247,45 @@ allowed_users = ["642606556151545857"]
         assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
         assert backup_ids()-existing
         check('daily backup remains independent and does not apply a staged update')
+        # Restore an export into independent paths, without any download or source checkout.
+        recovery=root/'recovered';recovery.mkdir()
+        for name in ['store','releases','runtime','diagnostics','discord']:(recovery/name).mkdir()
+        restored_unit='bds-restore-'+token+'.service'
+        restore_config=root/'restore-config.toml';text=(root/'config.toml').read_text().replace(unit,restored_unit)
+        for name in ['store','releases','runtime','diagnostics','discord']:text=text.replace(f'{root}/{name}"',f'{recovery}/{name}"')
+        restore_config.write_text(text)
+        def restoring(*args,ok=True):return run(binary,'--config',restore_config,*args,ok=ok)
+        restoring('import-package',root/'snapshot.tar.zst')
+        assert (recovery/'store/data/worlds/data').read_text()=='original-world'
+        assert os.readlink(recovery/'releases/current')=='1.2.3.4'
+        assert restoring('import-package',root/'snapshot.tar.zst',ok=False).returncode
+        for name in ['runtime','diagnostics']:os.chown(recovery/name,account.pw_uid,account.pw_gid)
+        restoring('generate-units',recovery/'generated',binary)
+        text=(recovery/'generated'/restored_unit).read_text()
+        text='\n'.join(l for l in text.splitlines() if not l.startswith(('RuntimeDirectory','StateDirectory','OnFailure=')))+'\n'
+        path=pathlib.Path('/run/systemd/system')/restored_unit;path.write_text(text);units.append(restored_unit)
+        run('systemctl','daemon-reload');run('systemctl','start',restored_unit)
+        assert json.loads((recovery/'runtime/status.json').read_text())['ready']
+        run('systemctl','stop',restored_unit)
+        check('portable export restores exact BDS and world on fresh paths, starts successfully and refuses overwrites')
+        # Tampered contents and unsafe archive links must never publish data/current.
+        import tarfile
+        unpack=root/'archive-unpack';unpack.mkdir()
+        with (root/'archive.tar').open('wb') as stream:subprocess.run(['zstd','-d','-q','-c',str(root/'snapshot.tar.zst')],stdout=stream,check=True)
+        with tarfile.open(root/'archive.tar') as archive:archive.extractall(unpack,filter='data')
+        (unpack/'data/worlds/data').write_text('tampered')
+        with tarfile.open(root/'tampered.tar','w') as archive:
+            for child in unpack.iterdir():archive.add(child,arcname=child.name)
+        run('zstd','-q',root/'tampered.tar','-o',root/'tampered.tar.zst')
+        shutil.rmtree(recovery/'store/data');(recovery/'releases/current').unlink()
+        assert restoring('import-package',root/'tampered.tar.zst',ok=False).returncode
+        assert not (recovery/'store/data').exists() and not (recovery/'releases/current').exists()
+        with tarfile.open(root/'unsafe.tar','w') as archive:
+            link=tarfile.TarInfo('data/escape');link.type=tarfile.SYMTYPE;link.linkname='/etc/passwd';archive.addfile(link)
+        run('zstd','-q',root/'unsafe.tar','-o',root/'unsafe.tar.zst')
+        assert restoring('import-package',root/'unsafe.tar.zst',ok=False).returncode
+        assert not (recovery/'store/data').exists()
+        check('tampered and symlink-containing recovery archives are rejected before publication')
         # Initial import retries use a durable record, not deletion of existing data.
         imported=root/'imported';old=root/'old';(old/'worlds').mkdir(parents=True)
         (old/'worlds/data').write_text('import-world');(old/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n');(old/'.installed-version').write_text('1.2.3.4')

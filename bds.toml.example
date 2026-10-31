@@ -18,7 +18,9 @@ start_limit = 3
 
 [maintenance]
 notice_seconds = 60
+# 毎朝のバックアップ14回分と、それ以外14回分。保護済みは別枠。
 retention = 14
+extra_retention = 14
 minimum_free_mib = 1024
 lock_wait_seconds = 300
 

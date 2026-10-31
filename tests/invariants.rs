@@ -98,7 +98,7 @@ fn backup_links_only_other_snapshots_and_restore_is_independent() {
 #[test]
 fn protected_snapshot_retention() {
     let mut f = Fixture::new();
-    f.c.maintenance.retention = 1;
+    f.c.maintenance.extra_retention = 1;
     fs::create_dir_all(f.c.data()).unwrap();
     fs::write(f.c.data().join("file"), "data").unwrap();
     let protected = snapshots::capture(&f.c, "1.2.3.4").unwrap();
@@ -325,4 +325,80 @@ fn restore_capacity_is_checked_before_copying() {
             .starts_with(".restore-")
     }));
     assert_eq!(fs::read(f.c.data().join("world")).unwrap(), b"world");
+}
+
+#[test]
+fn daily_retention_is_not_consumed_by_update_or_manual_backups() {
+    let mut f = Fixture::new();
+    f.c.maintenance.retention = 2;
+    f.c.maintenance.extra_retention = 1;
+    fs::create_dir_all(f.c.data()).unwrap();
+    fs::write(f.c.data().join("world"), "data").unwrap();
+    let oldest = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
+    let daily = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
+    let newest = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
+    let old_extra = snapshots::capture_reason(&f.c, "1.2.3.4", "update").unwrap();
+    let extra = snapshots::capture_reason(&f.c, "1.2.3.4", "manual").unwrap();
+    snapshots::protect(&f.c, &old_extra.id, true).unwrap();
+    snapshots::prune(&f.c).unwrap();
+    assert!(snapshots::load(&f.c, &oldest.id).is_err());
+    for id in [daily.id, newest.id, old_extra.id, extra.id] {
+        snapshots::verify(&f.c, &id).unwrap();
+    }
+}
+#[test]
+fn maintenance_guard_survives_reload_and_rejects_corrupt_record() {
+    let f = Fixture::new();
+    let p = bdsctl::admin::mode_path(&f.c);
+    util::atomic(&p, b"broken record", 0o644).unwrap();
+    assert!(bdsctl::admin::ensure_available(&f.c).is_err());
+    assert!(bdsctl::admin::in_maintenance(&f.c.clone()));
+    fs::remove_file(p).unwrap();
+    bdsctl::admin::ensure_available(&f.c).unwrap();
+}
+#[test]
+fn preflight_rejects_missing_candidate_and_insufficient_space_without_changes() {
+    let mut f = Fixture::new();
+    fs::create_dir_all(f.c.data()).unwrap();
+    fs::write(f.c.data().join("world"), "data").unwrap();
+    let r = releases::Release {
+        id: "1.2.3.5".into(),
+        url: "fixture".into(),
+        sha256: "fixture".into(),
+    };
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&r)).is_err());
+    f.c.maintenance.minimum_free_mib = u64::MAX;
+    assert!(bdsctl::operations::capacity_preflight(&f.c, None).is_err());
+    assert_eq!(
+        fs::read_to_string(f.c.data().join("world")).unwrap(),
+        "data"
+    );
+    assert!(!f.c.state().join("transaction.json").exists());
+}
+#[test]
+fn old_snapshot_metadata_remains_readable_as_manual() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.c.data()).unwrap();
+    fs::write(f.c.data().join("world"), "data").unwrap();
+    let s = snapshots::capture(&f.c, "1.2.3.4").unwrap();
+    let p = f.c.snapshots().join(&s.id).join("snapshot.json");
+    let mut value: serde_json::Value = util::read_json(&p).unwrap();
+    value.as_object_mut().unwrap().remove("reason");
+    util::json(&p, &value, 0o644).unwrap();
+    assert_eq!(snapshots::load(&f.c, &s.id).unwrap().reason, "manual");
+    assert!(bdsctl::admin::snapshot_line(&s).contains("JST"));
+}
+
+#[test]
+fn discord_explains_maintenance_without_creating_a_job() {
+    let mut f = Fixture::new();
+    f.c.discord.application_id = "1".into();
+    f.c.discord.guild_id = "2".into();
+    f.c.discord.allowed_users = vec!["4".into()];
+    util::atomic(&bdsctl::admin::mode_path(&f.c), b"maintenance", 0o644).unwrap();
+    let request = json!({"application_id":"1","guild_id":"2","member":{"user":{"id":"4"}},"type":2,"data":{"name":"restart"}});
+    let (reply, launch) = discord::handle(&f.c, &request).unwrap();
+    assert!(launch.is_none());
+    assert!(reply["data"]["content"].as_str().unwrap().contains("保守"));
+    assert!(!f.c.paths.discord_state.join("job.json").exists());
 }

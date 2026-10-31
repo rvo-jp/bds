@@ -65,6 +65,7 @@ impl Default for Server {
 pub struct Maintenance {
     pub notice_seconds: u64,
     pub retention: usize,
+    pub extra_retention: usize,
     pub minimum_free_mib: u64,
     pub lock_wait_seconds: u64,
 }
@@ -73,6 +74,7 @@ impl Default for Maintenance {
         Self {
             notice_seconds: 60,
             retention: 14,
+            extra_retention: 14,
             minimum_free_mib: 1024,
             lock_wait_seconds: 300,
         }
@@ -173,6 +175,7 @@ impl Config {
         ensure!(self.server.restart_seconds > 0, "復旧設定が不正です");
         ensure!(
             self.maintenance.retention > 0
+                && self.maintenance.extra_retention > 0
                 && self.maintenance.notice_seconds <= 3600
                 && self.maintenance.lock_wait_seconds <= 300,
             "メンテナンス設定が不正です"

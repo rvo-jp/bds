@@ -1,5 +1,7 @@
 use anyhow::{Context, Result, bail};
-use bdsctl::{config::Config, discord, operations, setup, snapshots, supervisor, util};
+use bdsctl::{
+    admin, config::Config, discord, operations, recovery, setup, snapshots, supervisor, util,
+};
 use std::path::Path;
 fn main() {
     if let Err(error) = run() {
@@ -11,7 +13,7 @@ fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "bdsctl [--config /etc/bds/config.toml] COMMAND\n\nstatus | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
+            "bdsctl [--config /etc/bds/config.toml] COMMAND\n\nstatus | status-json | inventory | maintenance-begin | maintenance-end | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | import-package FILE | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
         );
         return Ok(());
     }
@@ -41,6 +43,7 @@ fn run() -> Result<()> {
         "verify" | "protect" | "unprotect" | "restore" | "import-legacy" | "discord-job"
         | "notify-failure" => Some(1),
         "export" => Some(2),
+        "import-package" => Some(1),
         _ => Some(0),
     };
     if let Some(n) = arity {
@@ -60,25 +63,23 @@ fn run() -> Result<()> {
     };
     match command.as_str() {
         "status" => {
-            let status = supervisor::status(&c)?;
-            println!("{}", serde_json::to_string_pretty(&status)?);
-            if !supervisor::running(&c) {
-                bail!("今回のBDSが稼働中であることを確認できません")
-            }
+            util::root()?;
+            admin::status(&c)?;
+        }
+        "status-json" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&supervisor::status(&c)?)?
+            );
         }
         "console" => {
             util::root()?;
             supervisor::command(&c, &args.join(" "))?
         }
         "snapshots" => {
+            util::root()?;
             for s in snapshots::list(&c)? {
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    s.id,
-                    s.release,
-                    s.files.len(),
-                    if s.protected { "protected" } else { "daily" }
-                );
+                println!("{}", admin::snapshot_line(&s));
             }
         }
         "verify" => {
@@ -123,6 +124,15 @@ fn run() -> Result<()> {
                         ),
                     )?;
                 }
+                "maintenance-begin" => admin::begin(&c)?,
+                "maintenance-end" => admin::end(&c)?,
+                "inventory" => admin::inventory(&c)?,
+                "deployment-check" => admin::deployment_check(&c)?,
+                "start-check" => {
+                    admin::ensure_available(&c)?;
+                    operations::recover(&c)?;
+                }
+                "import-package" => recovery::import(&c, Path::new(value(0)?))?,
                 "recover" => operations::recover(&c)?,
                 "init" => operations::init(&c)?,
                 "import-legacy" => operations::import_legacy(&c, Path::new(value(0)?))?,
@@ -130,7 +140,7 @@ fn run() -> Result<()> {
                     operations::maintenance(&c, false, false)?;
                 }
                 "daily" => {
-                    operations::maintenance(&c, false, true)?;
+                    operations::daily(&c)?;
                 }
                 "update" => {
                     operations::maintenance(&c, true, false)?;
