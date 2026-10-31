@@ -24,6 +24,49 @@ pub struct Transaction {
 fn transaction_path(c: &Config) -> PathBuf {
     c.state().join("transaction.json")
 }
+#[derive(Serialize, Deserialize)]
+struct ImportTransaction {
+    release: String,
+    stage: String,
+}
+fn import_path(c: &Config) -> PathBuf {
+    c.state().join("import.json")
+}
+fn ensure_import_complete(c: &Config) -> Result<()> {
+    ensure!(
+        !import_path(c).exists(),
+        "初回取り込みが中断しています。停止状態でrecoverを実行してください"
+    );
+    Ok(())
+}
+fn finish_import(c: &Config) -> Result<()> {
+    let tx: ImportTransaction = util::read_json(&import_path(c))?;
+    identifier(&tx.release)?;
+    identifier(&tx.stage)?;
+    ensure!(tx.stage.starts_with(".import-"), "取り込み記録が不正です");
+    let stage = c.paths.store.join(&tx.stage);
+    ensure!(
+        !(stage.exists() && c.data().exists()),
+        "取り込み元と配置先が両方存在します。管理者が確認してください"
+    );
+    if !c.data().exists() {
+        util::files(&stage)?;
+        fs::rename(&stage, c.data())?;
+        fs::File::open(&c.paths.store)?.sync_all()?;
+    }
+    if let Ok(current) = releases::current(c) {
+        ensure!(
+            current == tx.release,
+            "取り込み記録と現在のBDS版が異なります"
+        );
+    }
+    releases::prepare(c, &tx.release)?;
+    chown_data(c)?;
+    releases::activate(c, &tx.release)?;
+    fs::remove_file(import_path(c))?;
+    fs::File::open(c.state())?.sync_all()?;
+    Ok(())
+}
 fn tx_save(c: &Config, t: &Transaction) -> Result<()> {
     util::json(&transaction_path(c), t, 0o600)
 }
@@ -105,6 +148,7 @@ fn no_pending_reboot(c: &Config) -> Result<()> {
     Ok(())
 }
 pub fn start(c: &Config) -> Result<()> {
+    ensure_import_complete(c)?;
     let p = c.state().join("start-permit.json");
     util::json(
         &p,
@@ -230,6 +274,15 @@ fn rollback(c: &Config, t: &Transaction) -> Result<()> {
 }
 pub fn recover(c: &Config) -> Result<()> {
     no_pending_reboot(c)?;
+    if import_path(c).exists() {
+        let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+        ensure_stopped(c)?;
+        ensure!(
+            !transaction_path(c).exists(),
+            "取り込みと操作の記録が競合しています"
+        );
+        return finish_import(c);
+    }
     let mut _guard = None;
     let path = transaction_path(c);
     if path.exists() {
@@ -299,6 +352,7 @@ pub fn recover(c: &Config) -> Result<()> {
     Ok(())
 }
 pub fn check(c: &Config) -> Result<Option<releases::Release>> {
+    ensure_import_complete(c)?;
     let (id, url) = releases::latest()?;
     if util::read_json::<releases::Release>(&c.state().join("rejected-release.json"))
         .is_ok_and(|r| r.id == id)
@@ -322,6 +376,7 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
         },
     )?;
     no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
     ensure!(
         !transaction_path(c).exists(),
         "中断記録があります。recoverを実行してください"
@@ -435,6 +490,7 @@ pub fn maintenance(c: &Config, update: bool, daily: bool) -> Result<snapshots::S
 pub fn restart(c: &Config) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
     ensure!(
         !transaction_path(c).exists(),
         "中断記録を先に復旧してください"
@@ -450,6 +506,7 @@ pub fn restart(c: &Config) -> Result<()> {
 pub fn reboot(c: &Config) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
     ensure!(
         !transaction_path(c).exists(),
         "中断記録を先に復旧してください"
@@ -475,6 +532,7 @@ pub fn reboot(c: &Config) -> Result<()> {
 pub fn restore(c: &Config, id: &str) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
     ensure!(!transaction_path(c).exists(), "中断記録があります");
     let target = snapshots::load(c, id)?;
     ensure!(
@@ -544,6 +602,7 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
 pub fn init(c: &Config) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     no_pending_reboot(c)?;
+    ensure_import_complete(c)?;
     ensure!(
         !c.current().exists() && !c.data().exists(),
         "既存データがあります"
@@ -559,11 +618,18 @@ pub fn init(c: &Config) -> Result<()> {
 pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     no_pending_reboot(c)?;
+    ensure_stopped(c)?;
+    ensure!(
+        !transaction_path(c).exists(),
+        "中断した操作を先に復旧してください"
+    );
+    if import_path(c).exists() {
+        return finish_import(c);
+    }
     ensure!(
         !c.current().exists() && !c.data().exists(),
         "移行先に既存データがあります"
     );
-    ensure_stopped(c)?;
     ensure!(
         !source.join(".server.stdin").exists(),
         "移行元が稼働中、またはFIFOが残っています"
@@ -613,7 +679,7 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
         releases::download(c, &version, &url)?;
         let stage = c.paths.store.join(format!(".import-{}", util::nonce()?));
         fs::create_dir(&stage)?;
-        let _cleanup = util::CleanupDir(stage.clone());
+        let cleanup = util::CleanupDir(stage.clone());
         for key in releases::MUTABLE {
             let from = directory.join(key);
             if from.is_dir() {
@@ -663,11 +729,18 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
                 == "nethernet",
             "旧RakNet設定を先に整理してください"
         );
-        fs::rename(&stage, c.data())?;
-        releases::prepare(c, &version)?;
-        chown_data(c)?;
-        releases::activate(c, &version)?;
-        Ok(())
+        util::sync_tree(&stage)?;
+        fs::File::open(&c.paths.store)?.sync_all()?;
+        util::json(
+            &import_path(c),
+            &ImportTransaction {
+                release: version,
+                stage: stage.file_name().unwrap().to_str().unwrap().into(),
+            },
+            0o600,
+        )?;
+        cleanup.persist();
+        finish_import(c)
     })();
     if temporary.exists() {
         let _ = fs::remove_dir_all(temporary);

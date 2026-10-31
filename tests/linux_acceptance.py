@@ -89,6 +89,27 @@ allowed_users = ["642606556151545857"]
         except urllib.error.HTTPError as e:assert e.code==401
         else:raise AssertionError('unsigned interaction accepted')
         check('unsigned HTTP interaction rejected')
+        # A slow body must not serialize unrelated requests; all sockets expire.
+        slow=[]
+        try:
+            def partial():
+                connection=socket.create_connection(('127.0.0.1',discord_port),timeout=1)
+                connection.settimeout(3)
+                headers=f'POST /interactions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65536\r\nX-Signature-Timestamp: {int(time.time())}\r\nX-Signature-Ed25519: '+('0'*128)+'\r\n\r\n{'
+                connection.sendall(headers.encode());return connection
+            slow.append(partial());time.sleep(.1)
+            try:urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{discord_port}/interactions',data=b'{}'),timeout=1)
+            except urllib.error.HTTPError as e:assert e.code==401
+            else:raise AssertionError('unsigned interaction accepted')
+            for _ in range(3):slow.append(partial())
+            time.sleep(.1)
+            try:urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{discord_port}/interactions',data=b'{}'),timeout=1)
+            except urllib.error.HTTPError as e:assert e.code==503,e.code
+            else:raise AssertionError('unbounded connection accepted')
+            for connection in slow:assert b'408' in connection.recv(256).split(b'\r\n',1)[0]
+        finally:
+            for connection in slow:connection.close()
+        check('slow HTTP bodies expire, concurrent requests progress and excess connections are rejected')
         # Copy failure must not leave a previously running server stopped.
         fakebin=root/'fakebin';fakebin.mkdir();(fakebin/'rsync').write_text('#!/bin/sh\nexit 23\n');(fakebin/'rsync').chmod(0o755)
         failed=subprocess.run([str(binary),'--config',str(root/'config.toml'),'backup'],env={**os.environ,'PATH':str(fakebin)+':'+os.environ['PATH']},capture_output=True,text=True,timeout=60)
@@ -127,6 +148,41 @@ allowed_users = ["642606556151545857"]
         # Half-replaced directory after a power loss is recoverable too.
         run('systemctl','stop',unit);(root/'store/state/transaction.json').write_text(json.dumps(transaction));shutil.rmtree(data)
         ctl('recover');assert (data/'worlds/data').read_text()=='original-world';check('interrupted data-directory replacement is recoverable')
+        # Initial import retries use a durable record, not deletion of existing data.
+        imported=root/'imported';old=root/'old';(old/'worlds').mkdir(parents=True)
+        (old/'worlds/data').write_text('import-world');(old/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n');(old/'.installed-version').write_text('1.2.3.4')
+        cached=imported/'releases/1.2.3.4';cached.mkdir(parents=True);shutil.copy2(fake,cached/'bedrock_server')
+        (cached/'release.json').write_text(json.dumps({'id':'1.2.3.4','url':'fixture','sha256':'fixture'}));(cached/'world_templates').write_text('damaged cached release')
+        import_config=root/'import-config.toml';text=(root/'config.toml').read_text()
+        for name in ['store','releases','runtime','diagnostics','discord']:text=text.replace(f'{root}/{name}"',f'{imported}/{name}"')
+        import_config.write_text(text)
+        def importing(*args,ok=True):return run(binary,'--config',import_config,*args,ok=ok)
+        result=importing('import-legacy',old,ok=False);assert result.returncode and (imported/'store/state/import.json').exists()
+        assert (imported/'store/data/worlds/data').read_text()=='import-world'
+        assert importing('restart',ok=False).returncode
+        (cached/'world_templates').unlink();importing('import-legacy',old)
+        assert not (imported/'store/state/import.json').exists();assert os.readlink(imported/'releases/current')=='1.2.3.4'
+        assert (old/'worlds/data').read_text()=='import-world';check('failed initial import retries safely without deleting destination or changing source')
+        # Simulate power loss just before data publication, then after activation.
+        stage=imported/'store/.import-interrupted';(imported/'store/data').rename(stage);(imported/'releases/current').unlink()
+        marker=imported/'store/state/import.json';record={'release':'1.2.3.4','stage':stage.name};marker.write_text(json.dumps(record))
+        importing('recover');assert (imported/'store/data/worlds/data').read_text()=='import-world';assert not marker.exists()
+        marker.write_text(json.dumps(record));importing('recover');assert not marker.exists()
+        check('initial import recovers interruption before publication and after activation')
+        # A status write failure must not deadlock BDS on its stdout pipe.
+        (release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit);run('systemctl','start',unit);assert status()['ready']
+        status_file=root/'runtime/status.json';status_file.unlink();status_file.mkdir()
+        try:
+            until=time.monotonic()+10
+            while time.monotonic()<until:
+                state=run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()
+                if state=='failed':break
+                time.sleep(.1)
+            assert state=='failed',state
+            assert run('systemctl','show',unit,'-p','MainPID','--value').stdout.strip()=='0'
+        finally:
+            status_file.rmdir();(release/'mode').unlink()
+        check('supervisor error still drains large stop output and BDS exits without a forced kill')
         print(json.dumps(report,ensure_ascii=False,indent=2),flush=True)
         if os.environ.get('BDS_ACCEPTANCE_REPORT'):pathlib.Path(os.environ['BDS_ACCEPTANCE_REPORT']).write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')
     except BaseException:

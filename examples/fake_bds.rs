@@ -23,6 +23,10 @@ fn main() {
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
         if line == "stop" {
+            if mode.trim() == "large-stop-output" {
+                io::stdout().write_all(&vec![b'x'; 1024 * 1024]).unwrap();
+                io::stdout().flush().unwrap();
+            }
             break;
         }
         if line == "list" && mode.trim() != "no-console" {

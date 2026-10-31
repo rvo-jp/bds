@@ -186,70 +186,81 @@ pub fn serve(c: &Config) -> Result<()> {
     ensure!(c.discord.enabled, "Discord受付が無効です");
     fs::create_dir_all(&c.paths.discord_state)?;
     let _lock = util::Lock::acquire(&c.paths.discord_state.join("receiver.lock"), 0)?;
-    let server = tiny_http::Server::http(&c.discord.listen)
-        .map_err(|e| anyhow::anyhow!("受付を開始できません: {e}"))?;
+    let listener = std::net::TcpListener::bind(&c.discord.listen)?;
     supervisor_notify()?;
-    for mut request in server.incoming_requests() {
-        if request.method() != &tiny_http::Method::Post || request.url() != "/interactions" {
-            let _ = request.respond(tiny_http::Response::empty(404));
+    let config = std::sync::Arc::new(c.clone());
+    let jobs = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for stream in listener.incoming() {
+        let Ok(mut stream) = stream else { continue };
+        use std::sync::atomic::Ordering;
+        if connections.load(Ordering::Acquire) >= 4 {
+            let _ = crate::http::respond(&mut stream, 503, b"");
             continue;
         }
-        if request.body_length().is_some_and(|n| n > 65536) {
-            let _ = request.respond(tiny_http::Response::empty(413));
-            continue;
-        }
-        let timestamp = request
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("X-Signature-Timestamp"))
-            .map(|h| h.value.as_str().to_owned())
-            .unwrap_or_default();
-        let signature = request
-            .headers()
-            .iter()
-            .find(|h| h.field.equiv("X-Signature-Ed25519"))
-            .map(|h| h.value.as_str().to_owned())
-            .unwrap_or_default();
-        let mut body = vec![];
-        if request
-            .as_reader()
-            .take(65537)
-            .read_to_end(&mut body)
-            .is_err()
-            || body.len() > 65536
-            || !signed(
-                &c.discord.public_key,
-                &timestamp,
-                &signature,
-                &body,
-                util::now(),
-            )
-        {
-            let _ = request.respond(tiny_http::Response::empty(401));
-            continue;
-        }
-        let response = serde_json::from_slice::<Value>(&body)
-            .map_err(anyhow::Error::from)
-            .and_then(|v| handle(c, &v));
-        match response {
-            Ok((v, launch)) => {
-                let response = tiny_http::Response::from_string(v.to_string()).with_header(
-                    tiny_http::Header::from_bytes("Content-Type", "application/json").unwrap(),
-                );
-                let _ = request.respond(response);
-                if let Some(j) = launch {
-                    let config = c.clone();
-                    std::thread::Builder::new().stack_size(256*1024).spawn(move||{let unit=format!("bds-discord-{}.service",j.kind);if util::systemctl(&["--no-block","start",&unit]).is_err(){let _=util::webhook(&config.paths.webhook_file,"Discord操作を開始できませんでした。権限設定とサービス状態を確認してください。");}})?;
+        connections.fetch_add(1, Ordering::AcqRel);
+        let permit = ConnectionPermit(connections.clone());
+        let config = config.clone();
+        let jobs = jobs.clone();
+        let accepted = std::time::Instant::now();
+        if std::thread::Builder::new()
+            .name("interaction".into())
+            .stack_size(256 * 1024)
+            .spawn(move || {
+                let _permit = permit;
+                if let Err(code) = receive(&config, &jobs, &mut stream, accepted) {
+                    let _ = crate::http::respond(&mut stream, code, b"");
                 }
-            }
-            Err(_) => {
-                eprintln!("Discord要求を処理できませんでした");
-                let _ = request.respond(tiny_http::Response::empty(500));
-            }
+            })
+            .is_err()
+        {
+            eprintln!("Discord受付の処理を開始できませんでした");
         }
     }
     Ok(())
 }
+struct ConnectionPermit(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+fn receive(
+    c: &Config,
+    jobs: &std::sync::Mutex<()>,
+    stream: &mut std::net::TcpStream,
+    accepted: std::time::Instant,
+) -> std::result::Result<(), u16> {
+    let request = crate::http::read(stream, accepted + std::time::Duration::from_secs(2))?;
+    if !signed(
+        &c.discord.public_key,
+        &request.timestamp,
+        &request.signature,
+        &request.body,
+        util::now(),
+    ) {
+        return Err(401);
+    }
+    let value = serde_json::from_slice::<Value>(&request.body).map_err(|_| 400u16)?;
+    // Network reads are parallel, but confirmation/job changes remain serial.
+    let (response, launch) = {
+        let _guard = jobs.lock().map_err(|_| 500u16)?;
+        handle(c, &value).map_err(|_| 500u16)?
+    };
+    // Dispatch an accepted operation even if its acknowledgement cannot be delivered.
+    let _ = crate::http::respond(stream, 200, response.to_string().as_bytes());
+    if let Some(j) = launch {
+        let unit = format!("bds-discord-{}.service", j.kind);
+        if util::systemctl(&["--no-block", "start", &unit]).is_err() {
+            let _ = util::webhook(
+                &c.paths.webhook_file,
+                "Discord操作を開始できませんでした。権限設定とサービス状態を確認してください。",
+            );
+        }
+    }
+    Ok(())
+}
+
 fn supervisor_notify() -> Result<()> {
     crate::supervisor::notify("READY=1\nSTATUS=Discord署名検証付き受付を開始しました")
 }
@@ -359,5 +370,38 @@ mod tests {
         assert!(authorized(&c, &v));
         v["guild_id"] = json!("9");
         assert!(!authorized(&c, &v));
+    }
+    #[test]
+    fn signed_ping_is_served_over_http() {
+        use std::{
+            io::Write,
+            net::{TcpListener, TcpStream},
+            sync::Mutex,
+            time::Instant,
+        };
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let mut c = Config::default();
+        c.discord.public_key = hex::encode(key.verifying_key().to_bytes());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+            .unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut stream = listener.accept().unwrap().0;
+            receive(&c, &Mutex::new(()), &mut stream, Instant::now()).unwrap();
+        });
+        let body = b"{\"type\":1}";
+        let timestamp = util::now().to_string();
+        let mut content = timestamp.as_bytes().to_vec();
+        content.extend_from_slice(body);
+        let signature = hex::encode(key.sign(&content).to_bytes());
+        write!(client, "POST /interactions HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\nX-Signature-Timestamp: {timestamp}\r\nX-Signature-Ed25519: {signature}\r\n\r\n", body.len()).unwrap();
+        client.write_all(body).unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert_eq!(response.split_once("\r\n\r\n").unwrap().1, "{\"type\":1}");
     }
 }

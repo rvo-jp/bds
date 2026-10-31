@@ -58,7 +58,7 @@ sudo bdsctl reboot
 
 ## Discord
 
-署名検証付きのHTTP方式を使います。常時接続するDiscord Botは不要です。Caddyで`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。公開鍵・Application ID・サーバーID・許可ユーザーとロールは`config.toml`に設定します。
+署名検証付きのHTTP方式を使います。常時接続するDiscord Botは不要です。Caddyで`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。受付は読み取り2秒・同時4接続までに制限し、遅い要求で他の操作が詰まるのを防ぎます。公開鍵・Application ID・サーバーID・許可ユーザーとロールは`config.toml`に設定します。
 
 `/restart`はMinecraft、`/reboot`はOSの再起動です。両方とも同じ許可設定を使い、操作を始めた本人が60秒以内に確認する必要があります。許可を実行のたびに確認し、古い確認の再利用、同時操作、5分以内の連続操作を拒否します。Discord側でコマンドを表示できても、サーバー側の許可設定を満たさなければ実行できません。
 

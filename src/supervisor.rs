@@ -141,6 +141,40 @@ fn enqueue(queue: &mut VecDeque<u8>, text: &str) -> Result<()> {
     queue.push_back(b'\n');
     Ok(())
 }
+// Status/log failures must not stop us consuming the pipe that BDS needs to exit.
+// Discard output here: forwarding it to another failing sink could block again.
+fn stop_after_error(
+    child: &mut Child,
+    output: &mut std::process::ChildStdout,
+    queue: &mut VecDeque<u8>,
+) -> Result<std::process::ExitStatus> {
+    queue.clear();
+    // End a command whose prefix may already have entered the pipe.
+    enqueue(queue, "")?;
+    enqueue(queue, "stop")?;
+    loop {
+        let _ = flush(child, queue);
+        for _ in 0..16 {
+            let mut fd = libc::pollfd {
+                fd: output.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut fd, 1, 0) } <= 0 {
+                break;
+            }
+            let mut buffer = [0u8; 8192];
+            match output.read(&mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+        if let Some(exit) = child.try_wait()? {
+            return Ok(exit);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
 fn info(line: &str) -> Option<&str> {
     let (_, body) = line.split_once("INFO]")?;
     Some(body.trim())
@@ -325,7 +359,7 @@ pub fn run(c: &Config) -> Result<()> {
                                 .trim_end_matches('\r')
                                 .to_string();
                             buffer.drain(..=pos);
-                            println!("{line}");
+                            writeln!(std::io::stdout().lock(), "{line}")?;
                             logs.push_back(line.chars().take(4096).collect());
                             if logs.len() > 200 {
                                 logs.pop_front();
@@ -453,11 +487,8 @@ pub fn run(c: &Config) -> Result<()> {
         s.failed = true;
         s.ready = false;
         let _ = publish(c, &mut s);
-        let _ = enqueue(&mut queue, "stop");
-        while child.try_wait()?.is_none() {
-            let _ = flush(&mut child, &mut queue);
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        s.child_exit = stop_after_error(&mut child, &mut output, &mut queue)?.code();
+        let _ = publish(c, &mut s);
     }
     let _ = fs::remove_file(c.socket());
     drop(tx);
@@ -480,5 +511,29 @@ mod tests {
         let mut q = VecDeque::new();
         assert!(enqueue(&mut q, &"x".repeat(65536)).is_err());
         assert!(enqueue(&mut q, "list").is_ok());
+    }
+    #[test]
+    fn error_shutdown_drains_large_child_output() {
+        let mut child = Command::new("python3")
+            .args(["-c", "import sys; assert next(line.strip() for line in sys.stdin if line.strip()) == 'stop'; sys.stdout.buffer.write(b'x'*1048576); sys.stdout.flush()"])
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+        let pid = child.id();
+        let mut output = child.stdout.take().unwrap();
+        nonblocking(output.as_raw_fd()).unwrap();
+        nonblocking(child.stdin.as_ref().unwrap().as_raw_fd()).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            let mut queue = VecDeque::from(b"obsolete-command\n".to_vec());
+            let result = stop_after_error(&mut child, &mut output, &mut queue);
+            let _ = tx.send(result.map(|exit| exit.success()));
+        });
+        let result = rx.recv_timeout(Duration::from_secs(5));
+        if result.is_err() {
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
+            }
+        }
+        worker.join().unwrap();
+        assert!(result.unwrap().unwrap());
     }
 }

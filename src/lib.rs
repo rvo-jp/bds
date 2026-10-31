@@ -6,3 +6,5 @@ pub mod setup;
 pub mod snapshots;
 pub mod supervisor;
 pub mod util;
+
+mod http;

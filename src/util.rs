@@ -262,9 +262,15 @@ pub fn process_start(pid: u32) -> Option<String> {
 
 /// Removes only a caller-generated staging directory, including on early returns.
 pub struct CleanupDir(pub PathBuf);
+impl CleanupDir {
+    /// A durable recovery record now owns this directory's lifetime.
+    pub fn persist(mut self) {
+        self.0.clear();
+    }
+}
 impl Drop for CleanupDir {
     fn drop(&mut self) {
-        if self.0.exists() {
+        if !self.0.as_os_str().is_empty() && self.0.exists() {
             let _ = fs::remove_dir_all(&self.0);
         }
     }

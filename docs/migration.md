@@ -55,7 +55,7 @@ sudo bdsctl import-legacy /opt/bds/bedrock-server
 
 取り込み先は、データが`/var/lib/bds/data`、Minecraft本体が`/opt/bedrock/releases`です。旧チェックアウトとは独立しています。既存データのある移行先へは上書きしません。停止した旧BDSディレクトリ、または`server/`と`metadata.json`を持つ全体バックアップのtar.gzが対象です。ワールドだけのtar.gzは直接取り込めません。
 
-`.installed-version`と同じBDSを公式配布から取得します。取得できない場合、別版へ勝手に更新せず停止します。リンク・特殊ファイル・直接編集された公式パックも拒否します。独自パックはデータ側へ分離します。取り込み後にワールド名、server.properties、permissions、allowlist、アドオンを確認します。TCP/UDPの既存の許可設定を引き継いでください。
+`.installed-version`と同じBDSを公式配布から取得します。取得できない場合、別版へ勝手に更新せず停止します。リンク・特殊ファイル・直接編集された公式パックも拒否します。独自パックはデータ側へ分離します。取り込みが途中で失敗した場合は、停止状態で原因を直し、`sudo bdsctl recover`または同じ取り込みコマンドで再開します。既存データを削除してやり直さないでください。取り込み後にワールド名、server.properties、permissions、allowlist、アドオンを確認します。TCP/UDPの既存の許可設定を引き継いでください。
 
 ## 4. 実際の接続とバックアップを確認する
 
@@ -67,7 +67,7 @@ sudo bdsctl console 'list'
 
 Minecraftアプリから接続し、ワールド・アドオン・権限を確認します。`sudo bdsctl backup`で停止・バックアップ・起動の一巡を実施し、再度アプリから接続します。起動ログだけでは完了と判定しません。移行直後のバックアップは`protect`で保護します。
 
-Caddyで既存の`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。配布物の`Caddyfile.example`を参考に既存設定へ統合し、設定を検証してから反映します。他のサイト設定を置き換えないでください。
+Caddyで既存の`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。配布物の`Caddyfile.example`を参考に既存設定へ統合し、設定を検証してから反映します。他のサイト設定を置き換えないでください。設定例の読み取り期限はサーバー全体に適用されるため、他サイトと共有する場合はその用途にも適切か確認します。受付はContent-Length付きのHTTP/1.x要求を使用し、本文64KiB・ヘッダー8KiB・同時4接続・接続受付から読み取り完了まで2秒の上限を持ちます。
 
 ```sh
 sudo systemctl start bds-discord.service
