@@ -4,12 +4,12 @@
 
 ## 1. 停止前に配布物を準備する
 
-開発PCで実行します。GitHub CLIでリポジトリへアクセスでき、SSH接続できることが前提です。
+開発PCで実行します。GitHub CLIでリポジトリへアクセスでき、SSH接続できることが前提です。以下のIPアドレス・ドメイン・SSH鍵のパスは例です。実際の環境へ置き換えてください。
 
 ```sh
-export BDS_SSH_KEY="$HOME/.ssh/rvo.pem"
+export BDS_SSH_KEY="$HOME/.ssh/bds_ed25519"
 commit=$(git rev-parse HEAD)
-deploy/stage.sh root@162.43.15.136 "$commit"
+deploy/stage.sh root@192.0.2.10 "$commit"
 ```
 
 指定コミットの成功したCIから配布物を取得し、VPSの専用一時ディレクトリへ転送します。チェックサムと、バイナリに埋め込まれたコミットIDを検証します。この段階ではサービスも設定も変更しません。表示された配布先とコミットIDを次の手順で使います。
@@ -52,7 +52,7 @@ BDSのプロセスと子プロセスが残っていないことを確認しま�
 開発PCから、手順1で表示された配布先とコミットIDを指定します。
 
 ```sh
-deploy/apply.sh root@162.43.15.136 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linux-x86_64 "$commit"
+deploy/apply.sh root@192.0.2.10 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linux-x86_64 "$commit"
 ```
 
 停止状態・チェックサム・コミットIDを再確認し、バイナリとサービス定義を設置します。インストールだけでは起動も自動起動の有効化も行いません。設定ファイルは上書きしません。
@@ -81,7 +81,7 @@ sudo bdsctl console 'list'
 
 Minecraftアプリから接続し、ワールド・アドオン・権限を確認します。`sudo bdsctl backup`で停止・バックアップ・起動の一巡を実施し、再度アプリから接続します。起動ログだけでは完了と判定しません。移行直後のバックアップは`protect`で保護します。
 
-Caddyで既存の`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。配布物の`Caddyfile.example`を参考に既存設定へ統合し、設定を検証してから反映します。他のサイト設定を置き換えないでください。設定例の読み取り期限はサーバー全体に適用されるため、他サイトと共有する場合はその用途にも適切か確認します。受付はContent-Length付きのHTTP/1.x要求を使用し、本文64KiB・ヘッダー8KiB・同時4接続・接続受付から読み取り完了まで2秒の上限を持ちます。
+Caddyで既存の`https://minecraft.example.com/interactions`を`127.0.0.1:8765/interactions`へ転送します。配布物の`Caddyfile.example`を参考に既存設定へ統合し、設定を検証してから反映します。他のサイト設定を置き換えないでください。設定例の読み取り期限はサーバー全体に適用されるため、他サイトと共有する場合はその用途にも適切か確認します。受付はContent-Length付きのHTTP/1.x要求を使用し、本文64KiB・ヘッダー8KiB・同時4接続・接続受付から読み取り完了まで2秒の上限を持ちます。
 
 ```sh
 sudo systemctl start bds-discord.service
@@ -109,8 +109,8 @@ sudo systemctl list-timers 'bds-*'
 
 ```sh
 commit=$(git rev-parse HEAD)
-deploy/stage.sh root@162.43.15.136 "$commit"
-deploy/upgrade.sh root@162.43.15.136 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linux-x86_64 "$commit"
+deploy/stage.sh root@192.0.2.10 "$commit"
+deploy/upgrade.sh root@192.0.2.10 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linux-x86_64 "$commit"
 ```
 
 `upgrade.sh`は停止前に成果物・設定・必要コマンドを検証し、実行中の保守処理がないことを確認します。保守開始後にタイマー・Discord受付を停止し、管理プログラムとサービス定義を入れ替えます。正常終了時は元から稼働していたサービスだけを再開します。有効化設定は変更せず、手動停止中のMinecraftも起動しません。標準の保存先・サービス名専用で、初回移行や既に保守中の状態では使用しません。
@@ -130,7 +130,7 @@ deploy/upgrade.sh root@162.43.15.136 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linu
 以前の採用版をReleaseから取得するときは、コミットとタグを指定します。バイナリに埋め込まれたコミットIDを再検証するため、別版の取り違えを拒否します。
 
 ```sh
-deploy/stage.sh root@162.43.15.136 FULL_COMMIT vVERSION
+deploy/stage.sh root@192.0.2.10 FULL_COMMIT vVERSION
 ```
 
 管理ツールの切り戻し後はワールド・設定の互換性も確認し、必要なら対応するバックアップを復元します。旧版のソースや実行ファイルの複製をVPS内へ積み重ねません。使用済みの配布一時ディレクトリは作業後に削除します。

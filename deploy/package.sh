@@ -15,6 +15,7 @@ trap 'rm -rf "$staging"' EXIT HUP INT TERM
 bundle="$staging/bdsctl-linux-x86_64"
 mkdir "$bundle"
 install -m 0755 "$binary" "$bundle/bdsctl"
+install -m 0644 LICENSE "$bundle/LICENSE"
 install -m 0644 bds.toml.example "$bundle/bds.toml.example"
 install -m 0644 deploy/Caddyfile.example "$bundle/Caddyfile.example"
 if [ -n "${BDS_VALIDATION_REPORT:-}" ]; then install -m 0644 "$BDS_VALIDATION_REPORT" "$bundle/validation.json"; fi

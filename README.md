@@ -4,7 +4,7 @@ LinuxのMinecraft Bedrock Dedicated Serverを管理するRust製の単一実行�
 
 ## 構成
 
-開発するソースの正本は、このGitリポジトリのチェックアウトです。既定設定は `src/config.rs` の定義から生成し、`bdsctl --default-config` で全項目を表示できます。`bds.toml.example` はDiscord連携の上書き例です。本番設定は `/etc/bds/config.toml` だけを編集し、設置処理は上書きしません。サービス定義とDiscord操作権限は同じコードから生成します。
+開発するソースの正本は、このGitリポジトリのチェックアウトです。既定設定は `src/config.rs` の定義から生成し、`bdsctl --default-config` で全項目を表示できます。`bds.toml.example` はDiscord連携の上書き例です。設定例のDiscord ID・公開鍵、手順のIPアドレス・ドメイン・SSH鍵パスはダミーなので、実際の環境へ置き換えてください。本番設定は `/etc/bds/config.toml` だけを編集し、設置処理は上書きしません。サービス定義とDiscord操作権限は同じコードから生成します。
 
 | 保存先 | 内容・所有者 |
 | --- | --- |
@@ -73,7 +73,7 @@ sudo bdsctl reboot
 
 ## Discord
 
-署名検証付きのHTTP方式を使います。常時接続するDiscord Botは不要です。Caddyで`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。受付は読み取り2秒・同時4接続までに制限し、遅い要求で他の操作が詰まるのを防ぎます。公開鍵・Application ID・サーバーID・許可ユーザーとロールは`config.toml`に設定します。
+署名検証付きのHTTP方式を使います。常時接続するDiscord Botは不要です。Caddyで`https://minecraft.example.com/interactions`を`127.0.0.1:8765/interactions`へ転送します。受付は読み取り2秒・同時4接続までに制限し、遅い要求で他の操作が詰まるのを防ぎます。公開鍵・Application ID・サーバーID・許可ユーザーとロールは`config.toml`に設定します。
 
 `/restart`はMinecraft、`/reboot`はOSの再起動です。両方とも同じ許可設定を使い、操作を始めた本人が60秒以内に確認する必要があります。許可を実行のたびに確認し、古い確認の再利用、同時操作、5分以内の連続操作を拒否します。Discord側でコマンドを表示できても、サーバー側の許可設定を満たさなければ実行できません。
 
@@ -117,3 +117,7 @@ CIで同じ検査とLinux隔離試験を実行し、静的リンクしたLinux�
 常駐する2つのRustプロセスの目標は、合計PSS20MiB以下・待機時CPU0.1%以下です。BDS本体・Caddy・実行中のバックアップは別に測定します。
 
 初回切り替えと通常更新は[移行・配布手順](docs/migration.md)、検査の内容は[検証方法](docs/testing.md)、構造と失敗時の扱いは[設計](docs/design.md)を参照してください。
+
+## ライセンス
+
+このリポジトリのコードとドキュメントは[MIT License](LICENSE)で公開します。Minecraft本体や依存ライブラリのライセンスは、それぞれの提供元の条件に従います。

@@ -67,10 +67,10 @@ retention = 2
 [discord]
 enabled = true
 listen = "127.0.0.1:{discord_port}"
-application_id = "1555006504107511919"
-public_key = "1e0e5eafd3168ceedaba850d1228bac6947b6be9f0fd0b1a7f410521bb0a90c9"
-guild_id = "1506611823267414036"
-allowed_users = ["642606556151545857"]
+application_id = "1111111111111111111"
+public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+guild_id = "2222222222222222222"
+allowed_users = ["3333333333333333333"]
 ''')
         ctl('recover');run('chown','-R',user+':'+user,data)
         ctl('generate-units',root/'generated',binary)
@@ -197,7 +197,7 @@ allowed_users = ["642606556151545857"]
         assert finished.exists();time.sleep(.1);ctl('recover');run('systemctl','start',unit);assert status()['ready'];check('orphaned copy retains lock and incomplete snapshot is cleaned only afterward')
         # Root job receipts must remain readable by the unprivileged HTTP receiver,
         # including when the maintenance unit applies UMask=0077.
-        job={'id':uuid.uuid4().hex,'user':'642606556151545857','kind':'restart','phase':'dispatched','created':int(time.time()),'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
+        job={'id':uuid.uuid4().hex,'user':'3333333333333333333','kind':'restart','phase':'dispatched','created':int(time.time()),'boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
         jobfile=root/'discord/job.json';jobfile.write_text(json.dumps(job));os.chown(jobfile,account.pw_uid,account.pw_gid);jobfile.chmod(0o600)
         result=subprocess.run([str(binary),'--config',str(root/'config.toml'),'discord-job','restart'],capture_output=True,text=True,timeout=60,preexec_fn=lambda:os.umask(0o077));assert result.returncode==0,result.stderr
         outcome=json.loads(run('runuser','-u',user,'--','cat',root/'store/state/discord-outcome.json').stdout);assert outcome['phase']=='done'

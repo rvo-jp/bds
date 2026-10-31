@@ -3,10 +3,11 @@
 # このファイルにはDiscordを有効にするための上書きだけを記載します。
 # 保存先や保持数などを変える場合は、--default-config の対応項目を追加してください。
 
+# 以下のIDと公開鍵はダミーです。利用するDiscordアプリ・サーバーの値へ置き換えてください。
 [discord]
 enabled = true
-application_id = "1555006504107511919"
-public_key = "1e0e5eafd3168ceedaba850d1228bac6947b6be9f0fd0b1a7f410521bb0a90c9"
-guild_id = "1506611823267414036"
-allowed_users = ["642606556151545857"]
-allowed_roles = ["1529826364268744754"]
+application_id = "1111111111111111111"
+public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+guild_id = "2222222222222222222"
+allowed_users = ["3333333333333333333"]
+allowed_roles = ["4444444444444444444"]

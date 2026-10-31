@@ -31,7 +31,7 @@ class Distribution(unittest.TestCase):
         import tarfile
         repo=self.root/'clean-repo';(repo/'deploy').mkdir(parents=True)
         for name in ['package.sh','Caddyfile.example']:shutil.copy2(ROOT/'deploy'/name,repo/'deploy'/name)
-        shutil.copy2(ROOT/'bds.toml.example',repo/'bds.toml.example')
+        for name in ['bds.toml.example','LICENSE']:shutil.copy2(ROOT/name,repo/name)
         subprocess.run(['git','init','-q',str(repo)],check=True)
         for key,value in [('user.name','BDS test'),('user.email','test@example.invalid')]:subprocess.run(['git','-C',str(repo),'config',key,value],check=True)
         subprocess.run(['git','-C',str(repo),'add','.'],check=True);subprocess.run(['git','-C',str(repo),'commit','-qm','fixture'],check=True)
@@ -42,7 +42,7 @@ class Distribution(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         with tarfile.open(repo/'dist/bdsctl-linux-x86_64.tar.gz') as archive:
             names={m.name.rstrip('/') for m in archive.getmembers()}
-            self.assertEqual(names,{'bdsctl-linux-x86_64'}|{'bdsctl-linux-x86_64/'+n for n in ['bdsctl','BUILD.json','SHA256SUMS','bds.toml.example','Caddyfile.example']})
+            self.assertEqual(names,{'bdsctl-linux-x86_64'}|{'bdsctl-linux-x86_64/'+n for n in ['bdsctl','BUILD.json','SHA256SUMS','bds.toml.example','Caddyfile.example','LICENSE']})
             target=self.root/'unpacked';archive.extractall(target)
         result=subprocess.run(['sh',str(ROOT/'deploy/install.sh'),'--check',str(target/'bdsctl-linux-x86_64'),commit],capture_output=True,text=True,env=env)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)

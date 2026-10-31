@@ -11,7 +11,7 @@
 		}
 	}
 }
-smp.rvo.jp {
+minecraft.example.com {
 	request_body {
 		max_size 64KB
 	}

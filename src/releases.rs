@@ -243,7 +243,7 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
                 fs::write(
                     &source,
                     if *name == "server.properties" {
-                        "server-name=RvoSMP\nlevel-name=RvoSMP\ntransport=nethernet\nserver-port=19132\nserver-udp-ports=19132\n"
+                        "server-name=Bedrock Server\nlevel-name=Bedrock level\ntransport=nethernet\nserver-port=19132\nserver-udp-ports=19132\n"
                     } else {
                         "[]\n"
                     },
