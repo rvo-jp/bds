@@ -1,30 +1,19 @@
+/target/
+/dist/
+/.vscode/
 .DS_Store
 Icon?
-
-# Bedrock server runtime files are downloaded/generated on the server.
-bedrock-server/
-backups/
+# Secrets and server data never belong in the source repository.
+bds.toml
 bds.conf
-
-# Local logs and archives.
-*.log
-*.zip
-
-# Maintenance lock and Python test caches.
-.maintenance.lock
+webhook
+*.pem
+*.key
+.env
+/bedrock-server/
+/backups/
+/.player-notify/
+/discord-control/config.json
+/discord-control/.venv/
 __pycache__/
 *.pyc
-
-# Player notification cursor, lock, and temporary response files.
-.player-notify/
-
-# Retained maintenance snapshots and interrupted staging directories.
-bedrock-server.pre-*/
-bedrock-server.failed-*/
-.bds-transaction.*/
-
-# Discord control credentials and runtime receipts.
-discord-control/config.json
-discord-control/state.json
-discord-control/*.tmp
-.venv/

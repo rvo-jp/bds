@@ -1,0 +1,27 @@
+name: Rust checks and Linux binary
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: rustup toolchain install 1.96.1 --profile minimal --component clippy,rustfmt
+      - run: sudo apt-get update && sudo apt-get install -y rsync zstd musl-tools
+      - run: cargo +1.96.1 fmt --check
+      - run: cargo +1.96.1 clippy --locked --all-targets -- -D warnings
+      - run: cargo +1.96.1 test --locked
+      - run: rustup target add x86_64-unknown-linux-musl --toolchain 1.96.1
+      - run: cargo +1.96.1 build --release --locked --target x86_64-unknown-linux-musl --bins --examples
+        env:
+          BDS_COMMIT: ${{ github.sha }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_x86_64_unknown_linux_musl: musl-gcc
+      - run: sudo python3 tests/linux_acceptance.py target/x86_64-unknown-linux-musl/release/bdsctl target/x86_64-unknown-linux-musl/release/examples/fake_bds
+      - run: deploy/package.sh dist target/x86_64-unknown-linux-musl/release/bdsctl
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bdsctl-linux-x86_64-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error

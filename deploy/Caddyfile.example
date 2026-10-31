@@ -1,0 +1,19 @@
+# 既存のTLS・他のサイト設定と統合してください。
+smp.rvo.jp {
+    request_body {
+        max_size 64KB
+    }
+    handle /interactions {
+        reverse_proxy 127.0.0.1:8765 {
+            transport http {
+                dial_timeout 2s
+                response_header_timeout 3s
+                read_timeout 5s
+                write_timeout 5s
+            }
+        }
+    }
+    handle {
+        respond "Not found" 404
+    }
+}

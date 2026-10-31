@@ -1,1 +1,0 @@
-bds-discord-control ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block start bds-control-restart.service, /usr/bin/systemctl --no-block start bds-control-reboot.service
