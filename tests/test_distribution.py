@@ -83,6 +83,13 @@ esac''')
         self.assertEqual(result.returncode,0,result.stderr)
         self.assertEqual(binary.read_text(),'previous binary');self.assertEqual(unit.read_text(),'previous service')
         self.assertEqual(build.read_text(),'previous build')
+    def test_preflight_refuses_symlinked_unit_without_touching_target(self):
+        installer,binary,unit,build,mapping=self.installer_fixture()
+        target=self.root/'foreign-service';target.write_text('untouched')
+        unit.unlink();unit.symlink_to(target)
+        result=subprocess.run(['sh',str(installer),'--preflight',str(self.bundle),COMMIT],capture_output=True,text=True,env={**os.environ,'PATH':str(self.bin)+':'+os.environ['PATH']})
+        self.assertNotEqual(result.returncode,0);self.assertEqual(target.read_text(),'untouched')
+        self.assertEqual(binary.read_text(),'previous binary')
     def test_partial_install_rolls_back_binary_units_and_metadata(self):
         installer,binary,unit,build,mapping=self.installer_fixture(fail=True)
         result=subprocess.run(['sh',str(installer),str(self.bundle),COMMIT],capture_output=True,text=True,env={**os.environ,'PATH':str(self.bin)+':'+os.environ['PATH']})

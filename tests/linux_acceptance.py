@@ -38,6 +38,8 @@ def main():
         for name in ['runtime','diagnostics','discord']:
             os.chown(root/name,account.pw_uid,account.pw_gid);(root/name).chmod(0o700)
         data=root/'store/data';(data/'worlds').mkdir(parents=True);(data/'worlds/data').write_text('original-world')
+        (data/'behavior_packs/custom/empty').mkdir(parents=True)
+        (data/'behavior_packs/custom/manifest.json').write_text('fixture-custom-pack')
         server_port=port();discord_port=port()
         (data/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n')
         release=root/'releases/1.2.3.4';release.mkdir();shutil.copy2(fake,release/'bedrock_server')
@@ -158,6 +160,12 @@ allowed_users = ["642606556151545857"]
         assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
         run('systemctl','start',unit)
         check('persistent maintenance blocks scheduled and manual starts, then restores only previously running BDS')
+        ctl('maintenance-begin');(release/'mode').write_text('no-console')
+        assert ctl('maintenance-end',ok=False).returncode and mode.exists()
+        assert run('systemctl','show',unit,'-p','MainPID','--value').stdout.strip()=='0'
+        (release/'mode').unlink();run('systemctl','reset-failed',unit);ctl('maintenance-end')
+        assert status()['ready'] and not mode.exists()
+        check('maintenance exit failure preserves guard and permits an explicit repaired retry')
         # A preflight failure must not send announcements, stop BDS or create a transaction.
         bad_config=root/'full-config.toml';bad_config.write_text((root/'config.toml').read_text().replace('minimum_free_mib = 0','minimum_free_mib = 18446744073709551615'))
         invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
@@ -258,6 +266,9 @@ allowed_users = ["642606556151545857"]
         restoring('import-package',root/'snapshot.tar.zst')
         assert (recovery/'store/data/worlds/data').read_text()=='original-world'
         assert os.readlink(recovery/'releases/current')=='1.2.3.4'
+        assert (recovery/'store/data/behavior_packs/custom/manifest.json').read_text()=='fixture-custom-pack'
+        assert (recovery/'store/data/behavior_packs/custom/empty').is_dir()
+        assert (recovery/'releases/1.2.3.4/behavior_packs/custom').resolve()==recovery/'store/data/behavior_packs/custom'
         assert restoring('import-package',root/'snapshot.tar.zst',ok=False).returncode
         for name in ['runtime','diagnostics']:os.chown(recovery/name,account.pw_uid,account.pw_gid)
         restoring('generate-units',recovery/'generated',binary)

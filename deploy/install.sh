@@ -38,11 +38,15 @@ fi
 staging=$(mktemp -d)
 trap 'rm -rf "$staging"' EXIT HUP INT TERM
 "$artifact_dir/bdsctl" generate-units "$staging" /usr/local/bin/bdsctl
+# Never follow an existing mask/link when installing or saving the previous files.
+files="/usr/local/bin/bdsctl /usr/local/share/bdsctl/BUILD.json /etc/polkit-1/rules.d/50-bds-discord.rules /etc/systemd/system/bds-update-check.timer /etc/systemd/system/bds-update-check.service"
+for source in "$staging/"*.service "$staging/"*.timer; do files="$files /etc/systemd/system/$(basename "$source")"; done
+for target in $files; do
+    [ ! -L "$target" ] || { echo "$target はリンクです。管理者が配置を確認してください" >&2; exit 1; }
+done
 if "$preflight"; then printf '%s\n' '停止前の検証が完了しました。'; exit 0; fi
 "$artifact_dir/bdsctl" prepare-directories
 # Restore a consistent set of installed files on failure. No old version is retained after success.
-files="/usr/local/bin/bdsctl /usr/local/share/bdsctl/BUILD.json /etc/polkit-1/rules.d/50-bds-discord.rules /etc/systemd/system/bds-update-check.timer /etc/systemd/system/bds-update-check.service"
-for source in "$staging/"*.service "$staging/"*.timer; do files="$files /etc/systemd/system/$(basename "$source")"; done
 for target in $files; do
     if [ -e "$target" ]; then mkdir -p "$staging/previous$(dirname "$target")"; cp -p "$target" "$staging/previous$target"; fi
 done

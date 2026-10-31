@@ -61,14 +61,21 @@ pub fn end(c: &Config) -> Result<()> {
     );
     operations::ensure_stopped(c)?;
     operations::recover_locked(c)?;
-    fs::remove_file(mode_path(c))?;
-    fs::File::open(c.state())?.sync_all()?;
-    if m.was_active
-        && let Err(e) = operations::start(c)
-    {
-        // Keep scheduled jobs inhibited if startup fails. Retry is explicit.
-        util::json(&mode_path(c), &m, 0o644)?;
-        let _ = util::systemctl(&["stop", &c.server.unit]);
+    let result = (|| {
+        fs::remove_file(mode_path(c))?;
+        fs::File::open(c.state())?.sync_all()?;
+        if m.was_active {
+            operations::start(c)?;
+        }
+        Ok(())
+    })();
+    if let Err(e) = result {
+        // Includes a directory-sync failure after removing the guard.
+        let saved = util::json(&mode_path(c), &m, 0o644);
+        if m.was_active {
+            let _ = util::systemctl(&["stop", &c.server.unit]);
+        }
+        saved.context("保守状態の再保存にも失敗しました")?;
         return Err(e);
     }
     println!(
