@@ -125,7 +125,7 @@ deploy/upgrade.sh root@162.43.15.136 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linu
 
 ### 採用版の保管
 
-本番に使う版は、検証済みコミットへ`v*`タグを付けてpushし、同じ検査に通った配布物をGitHub Releaseへ保存します。通常のCI成果物は90日保存なので、採用版の保管先にはしません。現在は移行前のため、本番採用タグは移行時に決めます。
+本番に使う版は、検証済みコミットへ`v*`タグを付けてpushし、同じ検査に通った配布物をGitHub Releaseへ保存します。通常のCI成果物は90日保存なので、採用版の保管先にはしません。採用版はGitHub Releaseで管理し、本番のコミットIDは`/usr/local/share/bdsctl/BUILD.json`と照合します。
 
 以前の採用版をReleaseから取得するときは、コミットとタグを指定します。バイナリに埋め込まれたコミットIDを再検証するため、別版の取り違えを拒否します。
 
