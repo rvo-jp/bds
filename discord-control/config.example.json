@@ -1,0 +1,10 @@
+{
+  "application_id": "APPLICATION_ID",
+  "public_key": "PUBLIC_KEY",
+  "guild_id": "DISCORD_SERVER_ID",
+  "allowed_user_ids": ["YOUR_USER_ID", "HELPER_USER_ID"],
+  "allowed_role_ids": [],
+  "port": 8765,
+  "bedrock_port": 19132,
+  "cooldown_seconds": 300
+}

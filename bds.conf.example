@@ -9,16 +9,37 @@
 # 空文字列にすると自動変更しません。
 SERVER_NAME_FORMAT="RvoSMP %v"
 
-# 更新確認。timer 関連の値を変えた場合は sudo ./bds.sh restart を再実行します。
+# 更新確認。timer 関連の値を変えた場合は sudo ./bds.sh configure を再実行します。
 CHECK_INTERVAL=6h
 UPDATE_NOTICE_SECONDS=300
+# 各起動でTCP受付とコンソール応答を待つ秒数。
+SERVER_START_TIMEOUT_SECONDS=120
+# 全起動で受付・応答の安定を確認する秒数。
+SERVER_STABLE_SECONDS=15
+# 監督処理・systemdの設定。変更後は configure を実行します。
+SERVER_HEALTH_INTERVAL_SECONDS=30
+SERVER_HEALTH_RESPONSE_TIMEOUT_SECONDS=10
+SERVER_HEALTH_FAILURES=3
+SERVER_RESTART_DELAY_SECONDS=30
+# 10分間の起動回数（初回を含む）。1〜3。
+SERVER_RESTART_LIMIT=3
+# Discord経由のMinecraft再起動・OS再起動の予告時間。
+CONTROL_NOTICE_SECONDS=60
 
-# バックアップ。BACKUP_ON_CALENDAR を変えた場合は sudo ./bds.sh restart を再実行します。
+# バックアップ。BACKUP_ON_CALENDAR を変えた場合は sudo ./bds.sh configure を再実行します。
 BACKUP_DIR="$BASE_DIR/backups"
 BACKUP_RETENTION_DAYS=14
 BACKUP_ON_CALENDAR="*-*-* 04:30:00"
-BACKUP_HOLD_SECONDS=10
+BACKUP_NOTICE_SECONDS=60
+BACKUP_LOCK_WAIT_SECONDS=1800
 BACKUP_MIN_FREE_MB=1024
 
 # Discord 通知。Webhook URL を設定する場合、このファイルは Git 管理しないでください。
 DISCORD_WEBHOOK_URL=
+# 1通知あたりの送信・再試行・待機の合計上限。
+DISCORD_TIMEOUT_SECONDS=30
+
+# 入退室通知。有効にするには true にし、sudo ./bds.sh configure を実行します。
+# Discord送信先は上記 DISCORD_WEBHOOK_URL と共通です。
+PLAYER_NOTIFY_ENABLED=false
+# PLAYER_NOTIFY_STATE_DIR="$BASE_DIR/.player-notify"

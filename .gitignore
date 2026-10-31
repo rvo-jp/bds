@@ -9,3 +9,22 @@ bds.conf
 # Local logs and archives.
 *.log
 *.zip
+
+# Maintenance lock and Python test caches.
+.maintenance.lock
+__pycache__/
+*.pyc
+
+# Player notification cursor, lock, and temporary response files.
+.player-notify/
+
+# Retained maintenance snapshots and interrupted staging directories.
+bedrock-server.pre-*/
+bedrock-server.failed-*/
+.bds-transaction.*/
+
+# Discord control credentials and runtime receipts.
+discord-control/config.json
+discord-control/state.json
+discord-control/*.tmp
+.venv/
