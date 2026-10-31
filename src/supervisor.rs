@@ -1,5 +1,6 @@
 use crate::{
     config::{Config, port},
+    signals::Signals,
     util,
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -13,16 +14,9 @@ use std::{
         net::{UnixDatagram, UnixListener, UnixStream},
     },
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
+    sync::mpsc,
     time::{Duration, Instant},
 };
-static STOP: AtomicBool = AtomicBool::new(false);
-extern "C" fn signal_stop(_: libc::c_int) {
-    STOP.store(true, Ordering::Relaxed);
-}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Status {
     pub invocation: String,
@@ -32,7 +26,7 @@ pub struct Status {
     pub failed: bool,
     pub stopped: bool,
     pub child_exit: Option<i32>,
-    pub checked_at: u64,
+    pub changed_at: u64,
     pub port: u16,
     pub reason: String,
 }
@@ -63,15 +57,15 @@ pub fn command(c: &Config, text: &str) -> Result<()> {
 pub fn status(c: &Config) -> Result<Status> {
     util::read_json(&c.paths.runtime.join("status.json"))
 }
-pub fn healthy(c: &Config) -> bool {
-    status(c)
-        .map(|s| {
-            s.ready
-                && !s.failed
-                && s.boot == util::boot()
-                && util::now().saturating_sub(s.checked_at) <= 15
-        })
-        .unwrap_or(false)
+pub fn running(c: &Config) -> bool {
+    status(c).is_ok_and(|s| {
+        s.ready
+            && !s.failed
+            && !s.stopped
+            && s.boot == util::boot()
+            && util::prop(&c.server.unit, "ActiveState").is_ok_and(|state| state == "active")
+            && util::prop(&c.server.unit, "InvocationID").is_ok_and(|id| id == s.invocation)
+    })
 }
 #[cfg(target_os = "linux")]
 pub fn owns_listener(pid: u32, port: u16) -> bool {
@@ -124,6 +118,7 @@ fn flush(child: &mut Child, queue: &mut VecDeque<u8>) -> Result<()> {
     }
     let b = queue.make_contiguous();
     match child.stdin.as_mut().context("stdinがありません")?.write(b) {
+        Ok(0) => bail!("コンソール入力を送信できません"),
         Ok(n) => {
             queue.drain(..n);
         }
@@ -141,38 +136,171 @@ fn enqueue(queue: &mut VecDeque<u8>, text: &str) -> Result<()> {
     queue.push_back(b'\n');
     Ok(())
 }
-// Status/log failures must not stop us consuming the pipe that BDS needs to exit.
-// Discard output here: forwarding it to another failing sink could block again.
+fn wait(fds: &mut [libc::pollfd], deadline: Option<Instant>) -> Result<()> {
+    let timeout = deadline.map_or(-1, |deadline| {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            0
+        } else {
+            remaining
+                .as_millis()
+                .saturating_add(1)
+                .min(i32::MAX as u128) as i32
+        }
+    });
+    let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout) };
+    if result < 0 {
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::Interrupted {
+            return Err(error.into());
+        }
+    }
+    Ok(())
+}
+// Even if state/log writes fail, consume BDS output until it can exit.
 fn stop_after_error(
     child: &mut Child,
     output: &mut std::process::ChildStdout,
     queue: &mut VecDeque<u8>,
+    mut signals: Option<&mut Signals>,
 ) -> Result<std::process::ExitStatus> {
     queue.clear();
     // End a command whose prefix may already have entered the pipe.
     enqueue(queue, "")?;
     enqueue(queue, "stop")?;
+    let mut output_open = true;
     loop {
-        let _ = flush(child, queue);
-        for _ in 0..16 {
-            let mut fd = libc::pollfd {
-                fd: output.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            if unsafe { libc::poll(&mut fd, 1, 0) } <= 0 {
-                break;
-            }
-            let mut buffer = [0u8; 8192];
-            match output.read(&mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
+        if let Some(signals) = signals.as_deref_mut() {
+            let _ = signals.receive()?;
+        }
+        if flush(child, queue).is_err() {
+            queue.clear();
+            child.stdin.take();
+        }
+        if output_open {
+            for _ in 0..16 {
+                let mut buffer = [0u8; 8192];
+                match output.read(&mut buffer) {
+                    Ok(0) => {
+                        output_open = false;
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(_) => {
+                        output_open = false;
+                        break;
+                    }
+                }
             }
         }
         if let Some(exit) = child.try_wait()? {
             return Ok(exit);
         }
-        std::thread::sleep(Duration::from_millis(10));
+        if !output_open && queue.is_empty() {
+            return Ok(child.wait()?);
+        }
+        let mut fds = [
+            libc::pollfd {
+                fd: if output_open { output.as_raw_fd() } else { -1 },
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: if queue.is_empty() {
+                    -1
+                } else {
+                    child.stdin.as_ref().map_or(-1, AsRawFd::as_raw_fd)
+                },
+                events: libc::POLLOUT,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: signals.as_ref().map_or(-1, |signals| signals.fd()),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        wait(&mut fds, None)?;
+    }
+}
+struct Startup {
+    started: bool,
+    confirmed: bool,
+    pending: Option<Instant>,
+    stable: Option<Instant>,
+    next_check: Instant,
+    expires: Instant,
+}
+impl Startup {
+    fn new(c: &Config) -> Self {
+        let now = Instant::now();
+        Self {
+            started: false,
+            confirmed: false,
+            pending: None,
+            stable: None,
+            next_check: now,
+            expires: now + Duration::from_secs(c.server.startup_seconds),
+        }
+    }
+    fn log(&mut self, line: &str) {
+        if info(line) == Some("Server started.") {
+            self.started = true;
+        }
+        if self.pending.is_some()
+            && info(line).is_some_and(|body| {
+                body.starts_with("There are ") && body.contains(" players online:")
+            })
+        {
+            self.pending = None;
+            self.confirmed = true;
+            self.next_check = Instant::now();
+        }
+    }
+    fn deadline(&self, c: &Config) -> Instant {
+        let mut deadline = self.stable.map_or(self.expires, |stable| {
+            stable + Duration::from_secs(c.server.stable_seconds)
+        });
+        if self.started {
+            deadline = deadline.min(self.next_check);
+        }
+        if let Some(pending) = self.pending {
+            deadline = deadline.min(pending + Duration::from_secs(c.server.response_seconds));
+        }
+        deadline
+    }
+    fn check(&mut self, c: &Config, pid: u32, queue: &mut VecDeque<u8>) -> Result<bool> {
+        let now = Instant::now();
+        ensure!(
+            self.stable.is_some() || now < self.expires,
+            "起動期限内に接続受付・応答を確認できませんでした"
+        );
+        if self.pending.is_some_and(|pending| {
+            pending.elapsed() >= Duration::from_secs(c.server.response_seconds)
+        }) {
+            self.pending = None;
+        }
+        let stable_due = self
+            .stable
+            .is_some_and(|stable| stable.elapsed() >= Duration::from_secs(c.server.stable_seconds));
+        if !self.started || (now < self.next_check && !stable_due) {
+            return Ok(false);
+        }
+        self.next_check = now + Duration::from_secs(1);
+        if !owns_listener(pid, port(c)?) {
+            self.stable = None;
+            self.confirmed = false;
+            self.pending = None;
+        } else if self.confirmed {
+            let stable = self.stable.get_or_insert(now);
+            return Ok(stable.elapsed() >= Duration::from_secs(c.server.stable_seconds));
+        } else if self.pending.is_none() {
+            enqueue(queue, "list")?;
+            self.pending = Some(now);
+        }
+        Ok(false)
     }
 }
 fn info(line: &str) -> Option<&str> {
@@ -194,7 +322,7 @@ fn player(line: &str) -> Option<String> {
     None
 }
 fn publish(c: &Config, s: &mut Status) -> Result<()> {
-    s.checked_at = util::now();
+    s.changed_at = util::now();
     util::json(&c.paths.runtime.join("status.json"), s, 0o644)
 }
 fn failure(c: &Config, s: &mut Status, reason: &str, logs: &VecDeque<String>) -> Result<()> {
@@ -222,7 +350,7 @@ fn failure(c: &Config, s: &mut Status, reason: &str, logs: &VecDeque<String>) ->
 }
 pub fn run(c: &Config) -> Result<()> {
     ensure!(cfg!(target_os = "linux"), "BDS監督はLinux専用です");
-    STOP.store(false, Ordering::Relaxed);
+    let mut signals = Signals::new()?;
     fs::create_dir_all(&c.paths.runtime)?;
     let _lock = util::Lock::acquire(&c.paths.runtime.join("supervisor.lock"), 0)?;
     let p = port(c)?;
@@ -235,13 +363,6 @@ pub fn run(c: &Config) -> Result<()> {
     let listener = UnixListener::bind(c.socket())?;
     util::chmod(&c.socket(), 0o600)?;
     listener.set_nonblocking(true)?;
-    unsafe {
-        libc::signal(
-            libc::SIGTERM,
-            signal_stop as *const () as libc::sighandler_t,
-        );
-        libc::signal(libc::SIGINT, signal_stop as *const () as libc::sighandler_t);
-    }
     let (tx, rx) = mpsc::sync_channel::<String>(64);
     let webhook = c.paths.webhook_file.clone();
     let network = std::thread::Builder::new()
@@ -254,14 +375,16 @@ pub fn run(c: &Config) -> Result<()> {
                 }
             }
         })?;
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .current_dir(c.current())
         .env("LD_LIBRARY_PATH", c.current())
         .env_remove("NOTIFY_SOCKET")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
+        .stderr(Stdio::inherit());
+    signals.configure_child(&mut command);
+    let mut child = command.spawn()?;
     let mut s = Status {
         invocation: std::env::var("INVOCATION_ID").unwrap_or_default(),
         boot: util::boot(),
@@ -270,51 +393,32 @@ pub fn run(c: &Config) -> Result<()> {
         ..Status::default()
     };
     let mut output = child.stdout.take().unwrap();
-
-    let started_at = Instant::now();
-    let mut next_check = Instant::now();
-    let mut next_publish = Instant::now();
-    let mut started = false;
-    let mut stable: Option<Instant> = None;
-    let mut pending: Option<Instant> = None;
-    let mut reply: Option<Instant> = None;
-    let mut misses = 0u32;
+    let mut startup = Startup::new(c);
     let mut stopping = false;
+    let mut stop_requested = false;
+    let mut output_open = true;
     let mut queue = VecDeque::new();
     let mut buffer = Vec::new();
     let mut logs = VecDeque::new();
     let outcome = (|| -> Result<()> {
         nonblocking(output.as_raw_fd())?;
         nonblocking(child.stdin.as_ref().unwrap().as_raw_fd())?;
+        publish(c, &mut s)?;
         loop {
-            let now = Instant::now();
-            if STOP.load(Ordering::Relaxed) && !stopping {
+            stop_requested |= signals.receive()?;
+            if stop_requested && !stopping {
                 stopping = true;
                 s.ready = false;
                 enqueue(&mut queue, "stop")?;
                 publish(c, &mut s)?;
                 let _ = notify("STOPPING=1\nSTATUS=正常停止中");
             }
-            let _ = flush(&mut child, &mut queue);
-            let mut fds = [
-                libc::pollfd {
-                    fd: output.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-                libc::pollfd {
-                    fd: listener.as_raw_fd(),
-                    events: libc::POLLIN,
-                    revents: 0,
-                },
-            ];
-            unsafe {
-                libc::poll(fds.as_mut_ptr(), 2, 250);
-            }
-            loop {
+            flush(&mut child, &mut queue)?;
+            for _ in 0..4 {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(250)));
+                        stream.set_read_timeout(Some(Duration::from_millis(250)))?;
+                        stream.set_write_timeout(Some(Duration::from_millis(250)))?;
                         let mut input = vec![];
                         let request = Read::by_ref(&mut stream)
                             .take(17000)
@@ -325,7 +429,7 @@ pub fn run(c: &Config) -> Result<()> {
                             .and_then(|v| v["command"].as_str().map(str::to_string))
                             .map(|text| {
                                 if text == "stop" {
-                                    STOP.store(true, Ordering::Relaxed);
+                                    stop_requested = true;
                                     Ok(())
                                 } else if stopping {
                                     bail!("停止中です")
@@ -348,43 +452,41 @@ pub fn run(c: &Config) -> Result<()> {
                     Err(e) => return Err(e.into()),
                 }
             }
-            loop {
-                let mut b = [0u8; 8192];
-                match output.read(&mut b) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        buffer.extend_from_slice(&b[..n]);
-                        while let Some(pos) = buffer.iter().position(|&x| x == b'\n') {
-                            let line = String::from_utf8_lossy(&buffer[..pos])
-                                .trim_end_matches('\r')
-                                .to_string();
-                            buffer.drain(..=pos);
-                            writeln!(std::io::stdout().lock(), "{line}")?;
-                            logs.push_back(line.chars().take(4096).collect());
-                            if logs.len() > 200 {
-                                logs.pop_front();
+            if output_open {
+                for _ in 0..16 {
+                    let mut bytes = [0u8; 8192];
+                    match output.read(&mut bytes) {
+                        Ok(0) => {
+                            output_open = false;
+                            break;
+                        }
+                        Ok(n) => {
+                            buffer.extend_from_slice(&bytes[..n]);
+                            while let Some(pos) = buffer.iter().position(|&x| x == b'\n') {
+                                let line = String::from_utf8_lossy(&buffer[..pos])
+                                    .trim_end_matches('\r')
+                                    .to_string();
+                                buffer.drain(..=pos);
+                                writeln!(std::io::stdout().lock(), "{line}")?;
+                                logs.push_back(line.chars().take(4096).collect());
+                                if logs.len() > 200 {
+                                    logs.pop_front();
+                                }
+                                if !s.ready && !stopping {
+                                    startup.log(&line);
+                                }
+                                if let Some(event) = player(&line) {
+                                    let _ = tx.try_send(event);
+                                }
                             }
-                            if info(&line) == Some("Server started.") {
-                                started = true;
-                            }
-                            if info(&line).is_some_and(|x| {
-                                x.starts_with("There are ") && x.contains(" players online:")
-                            }) && pending.is_some()
-                            {
-                                pending = None;
-                                reply = Some(Instant::now());
-                                misses = 0;
-                            }
-                            if let Some(event) = player(&line) {
-                                let _ = tx.try_send(event);
+                            if buffer.len() > 65536 {
+                                buffer.clear();
                             }
                         }
-                        if buffer.len() > 65536 {
-                            buffer.clear();
-                        }
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => return Err(e.into()),
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
-                    Err(e) => return Err(e.into()),
                 }
             }
             if let Some(exit) = child.try_wait()? {
@@ -401,93 +503,84 @@ pub fn run(c: &Config) -> Result<()> {
                     bail!("BDSが異常終了しました")
                 };
             }
-            let mut timed_out = false;
-            if !stopping
-                && pending
-                    .is_some_and(|t| t.elapsed() >= Duration::from_secs(c.server.response_seconds))
-            {
-                pending = None;
-                misses += 1;
-                stable = None;
-                timed_out = true;
+            if stop_requested && !stopping {
+                continue;
             }
-            if !stopping && now >= next_check {
-                next_check =
-                    now + Duration::from_secs(if s.ready { c.server.health_seconds } else { 1 });
-                let listening = owns_listener(child.id(), p);
-                if !listening {
-                    misses += u32::from(!timed_out);
-                    stable = None;
-                } else if started && pending.is_none() {
-                    enqueue(&mut queue, "list")?;
-                    pending = Some(now);
-                }
-                let responsive = started
-                    && listening
-                    && reply.is_some_and(|t| {
-                        t.elapsed()
-                            <= Duration::from_secs(
-                                c.server.health_seconds + c.server.response_seconds,
-                            )
-                    })
-                    && misses == 0;
-                if !s.ready {
-                    if responsive {
-                        let t = stable.get_or_insert(now);
-                        if t.elapsed() >= Duration::from_secs(c.server.stable_seconds) {
-                            s.ready = true;
-                            publish(c, &mut s)?;
-                            notify("READY=1\nSTATUS=起動・TCP受付・コンソール応答を確認済み")?;
-                            let _ = tx.try_send(
-                                if recovered {
-                                    "Minecraftサーバーが自動復旧しました。"
-                                } else {
-                                    "サーバーが起動しました。"
-                                }
-                                .into(),
-                            );
-                        }
-                    } else {
-                        stable = None;
+            if !stopping && !s.ready {
+                match startup.check(c, child.id(), &mut queue) {
+                    Ok(true) => {
+                        s.ready = true;
+                        publish(c, &mut s)?;
+                        notify("READY=1\nSTATUS=起動・TCP受付・コンソール応答を確認済み")?;
+                        let _ = tx.try_send(
+                            if recovered {
+                                "Minecraftサーバーが自動復旧しました。"
+                            } else {
+                                "サーバーが起動しました。"
+                            }
+                            .into(),
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        failure(c, &mut s, &format!("{error:#}"), &logs)?;
+                        let _ = tx.try_send("Minecraftの起動確認に失敗しました。正常停止後に制限内で復旧を試みます。".into());
+                        stopping = true;
+                        enqueue(&mut queue, "stop")?;
+                        let _ = notify("STOPPING=1\nSTATUS=起動失敗を記録して正常停止中");
                     }
                 }
             }
-            if !stopping
-                && ((!s.ready
-                    && stable.is_none()
-                    && started_at.elapsed() >= Duration::from_secs(c.server.startup_seconds))
-                    || (s.ready && misses >= c.server.failure_limit))
-            {
-                let was_ready = s.ready;
-                failure(
-                    c,
-                    &mut s,
-                    if was_ready {
-                        "接続受付またはコンソール応答が連続して失敗しました"
+            let mut fds = [
+                libc::pollfd {
+                    fd: if output_open { output.as_raw_fd() } else { -1 },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if stopping { -1 } else { listener.as_raw_fd() },
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: if queue.is_empty() {
+                        -1
                     } else {
-                        "起動期限内に接続受付・応答を確認できませんでした"
+                        child.stdin.as_ref().unwrap().as_raw_fd()
                     },
-                    &logs,
-                )?;
-                let _ = tx.try_send(
-                    "Minecraftサーバーの異常を検出しました。正常停止後に制限内で復旧を試みます。"
-                        .into(),
-                );
-                stopping = true;
-                enqueue(&mut queue, "stop")?;
-                let _ = notify("STOPPING=1\nSTATUS=異常を記録して正常停止中");
-            }
-            if now >= next_publish {
-                publish(c, &mut s)?;
-                next_publish = now + Duration::from_secs(5);
-            }
+                    events: libc::POLLOUT,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: signals.fd(),
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
+            // Only startup has deadlines. Once ready/stopping, wait for real events.
+            wait(
+                &mut fds,
+                if !s.ready && !stopping {
+                    Some(startup.deadline(c))
+                } else {
+                    None
+                },
+            )?;
         }
     })();
-    if outcome.is_err() && child.try_wait()?.is_none() {
+    if let Err(error) = &outcome {
         s.failed = true;
         s.ready = false;
+        if s.reason.is_empty() {
+            s.reason = format!("{error:#}");
+        }
         let _ = publish(c, &mut s);
-        s.child_exit = stop_after_error(&mut child, &mut output, &mut queue)?.code();
+        let exit = if let Some(exit) = child.try_wait()? {
+            exit
+        } else {
+            stop_after_error(&mut child, &mut output, &mut queue, Some(&mut signals))?
+        };
+        s.child_exit = exit.code();
         let _ = publish(c, &mut s);
     }
     let _ = fs::remove_file(c.socket());
@@ -524,7 +617,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {
             let mut queue = VecDeque::from(b"obsolete-command\n".to_vec());
-            let result = stop_after_error(&mut child, &mut output, &mut queue);
+            let result = stop_after_error(&mut child, &mut output, &mut queue, None);
             let _ = tx.send(result.map(|exit| exit.success()));
         });
         let result = rx.recv_timeout(Duration::from_secs(5));

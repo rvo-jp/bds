@@ -62,11 +62,8 @@ fn run() -> Result<()> {
         "status" => {
             let status = supervisor::status(&c)?;
             println!("{}", serde_json::to_string_pretty(&status)?);
-            if !supervisor::healthy(&c)
-                || util::prop(&c.server.unit, "ActiveState")? != "active"
-                || util::prop(&c.server.unit, "InvocationID")? != status.invocation
-            {
-                bail!("接続受付・応答を確認できていません")
+            if !supervisor::running(&c) {
+                bail!("今回のBDSが稼働中であることを確認できません")
             }
         }
         "console" => {

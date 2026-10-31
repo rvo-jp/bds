@@ -176,12 +176,7 @@ fn start_wait(c: &Config) -> Result<()> {
     while Instant::now() < deadline {
         let state = util::prop(&c.server.unit, "ActiveState")?;
         if state == "active" {
-            let s = supervisor::status(c)?;
-            ensure!(
-                s.invocation == util::prop(&c.server.unit, "InvocationID")?
-                    && supervisor::healthy(c),
-                "サービスと起動記録が一致しません"
-            );
+            ensure!(supervisor::running(c), "サービスと起動記録が一致しません");
             return Ok(());
         }
         if matches!(state.as_str(), "inactive" | "failed") {

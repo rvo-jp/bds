@@ -43,9 +43,7 @@ pub struct Server {
     pub unit: String,
     pub startup_seconds: u64,
     pub stable_seconds: u64,
-    pub health_seconds: u64,
     pub response_seconds: u64,
-    pub failure_limit: u32,
     pub restart_seconds: u64,
     pub start_limit: u32,
 }
@@ -56,9 +54,7 @@ impl Default for Server {
             unit: "bds.service".into(),
             startup_seconds: 120,
             stable_seconds: 15,
-            health_seconds: 30,
             response_seconds: 10,
-            failure_limit: 3,
             restart_seconds: 30,
             start_limit: 3,
         }
@@ -171,15 +167,10 @@ impl Config {
             "起動確認の秒数が範囲外です"
         );
         ensure!(
-            (5..=300).contains(&self.server.health_seconds)
-                && self.server.response_seconds > 0
-                && self.server.response_seconds <= self.server.health_seconds,
-            "監視間隔または応答期限が不正です"
+            (1..=60).contains(&self.server.response_seconds),
+            "起動時の応答期限は1〜60秒にしてください"
         );
-        ensure!(
-            (1..=10).contains(&self.server.failure_limit) && self.server.restart_seconds > 0,
-            "復旧設定が不正です"
-        );
+        ensure!(self.server.restart_seconds > 0, "復旧設定が不正です");
         ensure!(
             self.maintenance.retention > 0
                 && self.maintenance.notice_seconds <= 3600

@@ -1,10 +1,14 @@
 # 異常時の確認
 
-- `sudo bdsctl status`：今回の起動ID、BDSのPID、起動・異常・正常終了の記録。
+- `sudo bdsctl status`：今回の起動ID、BDSのPID、起動・異常・正常終了の記録。成功は今回のサービスが起動完了して稼働中であることを示し、現在の接続可否を再検査するものではありません。`changed_at`は最後の状態変更時刻です。
 - `systemctl status bds.service`と`journalctl -u bds.service`：起動回数上限、停止待ち、起動前の復旧エラー。
 - `/var/lib/bds-supervisor/*.json`：最新20件の異常理由と直近のBDS標準出力。
 - `/var/lib/bds/state/transaction.json`：中断した更新・復元の段階と復旧元。
 - `/var/lib/bds/state/discord-outcome.json`：最後にroot側で受けたDiscord操作のIDと結果。
+
+## プロセスは稼働中だが接続できない
+
+起動後の定期的な正常性確認は行いません。接続経路・Minecraftのログ・クライアントのバージョンなどを確認し、必要なら`sudo bdsctl restart`またはDiscordの`/restart`で正常停止・再起動を要求します。
 
 ## 停止が終わらない
 

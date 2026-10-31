@@ -3,7 +3,7 @@
 Does not operate bds.service, existing worlds, Discord endpoints or OS reboot.
 Run as root: python3 tests/linux_acceptance.py BDSCTL FAKE_BDS
 """
-import fcntl,hashlib,json,os,pathlib,pwd,shutil,socket,subprocess,sys,tempfile,time,uuid
+import fcntl,hashlib,json,os,pathlib,pwd,shutil,signal,socket,subprocess,sys,tempfile,time,uuid
 
 def run(*args,ok=True,timeout=90):
     result=subprocess.run([str(a) for a in args],capture_output=True,text=True,timeout=timeout)
@@ -55,9 +55,7 @@ user = "{user}"
 unit = "{unit}"
 startup_seconds = 3
 stable_seconds = 1
-health_seconds = 30
 response_seconds = 1
-failure_limit = 3
 restart_seconds = 1
 start_limit = 2
 [maintenance]
@@ -87,12 +85,38 @@ allowed_users = ["642606556151545857"]
         # Both resident Rust processes, excluding the fake Minecraft child.
         pids=[int(run('systemctl','show',u,'-p','MainPID','--value').stdout) for u in units]
         def cpu_ticks(pid):return sum(map(int,pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[11:13]))
+        status_file=root/'runtime/status.json';state_before=status_file.read_bytes();mtime_before=status_file.stat().st_mtime_ns
+        commands_before=(data/'worlds/commands.log').read_bytes()
+        def voluntary(pid):return int(next(l.split(':',1)[1] for l in pathlib.Path(f'/proc/{pid}/status').read_text().splitlines() if l.startswith('voluntary_ctxt_switches:')))
+        switches_before=voluntary(pids[0])
         before=sum(cpu_ticks(p) for p in pids);started=time.monotonic();time.sleep(30)
         seconds=time.monotonic()-started;after=sum(cpu_ticks(p) for p in pids)
         pss=sum(int(l.split()[1]) for p in pids for l in pathlib.Path(f'/proc/{p}/smaps_rollup').read_text().splitlines() if l.startswith('Pss:'))
         cpu=(after-before)/os.sysconf('SC_CLK_TCK')/seconds*100
         report['resident_pss_kib']=pss;report['idle_cpu_percent_one_core']=round(cpu,3);report['cpu_sample_seconds']=round(seconds,2)
         assert pss<=20*1024,(pss,'PSS target exceeded');assert cpu<=0.1,(cpu,'idle CPU target exceeded');check('two Rust processes meet PSS/idle CPU targets in isolated fixture')
+        assert status_file.read_bytes()==state_before and status_file.stat().st_mtime_ns==mtime_before
+        assert (data/'worlds/commands.log').read_bytes()==commands_before
+        wakeups=voluntary(pids[0])-switches_before;report['idle_supervisor_wakeups']=wakeups
+        assert wakeups<=2,('periodic idle wakeups remain',wakeups)
+        ctl('status');check('idle supervisor sends no probes, writes no heartbeat and waits without periodic wakeups')
+        # The child must receive normal signals, rather than inheriting our signalfd mask.
+        child_pid=status()['pid'];mask=int(next(l.split(':',1)[1] for l in pathlib.Path(f'/proc/{child_pid}/status').read_text().splitlines() if l.startswith('SigBlk:')),16)
+        assert not mask & sum(1 << (number-1) for number in [signal.SIGTERM,signal.SIGINT,signal.SIGCHLD])
+        invocation=status()['invocation'];ctl('console','close-output')
+        until=time.monotonic()+2
+        while pathlib.Path(f'/proc/{child_pid}/fd/1').exists() and time.monotonic()<until:time.sleep(.01)
+        assert not pathlib.Path(f'/proc/{child_pid}/fd/1').exists()
+        before=sum(cpu_ticks(p) for p in pids);time.sleep(.2)
+        assert sum(cpu_ticks(p) for p in pids)-before<=1,'closed stdout causes a busy loop'
+        os.kill(child_pid,signal.SIGKILL)
+        until=time.monotonic()+10
+        while time.monotonic()<until:
+            current=status()
+            if current['ready'] and current['invocation']!=invocation:break
+            time.sleep(.05)
+        assert current['ready'] and current['invocation']!=invocation
+        check('child exit wakes supervisor after stdout closes and systemd restarts BDS')
         # Unauthenticated requests can never become an action.
         import urllib.request,urllib.error
         try:urllib.request.urlopen(urllib.request.Request(f'http://127.0.0.1:{discord_port}/interactions',data=b'{"type":1}'),timeout=3)
@@ -153,6 +177,10 @@ allowed_users = ["642606556151545857"]
         assert status()['invocation']==invocation and backup_ids()==existing
         assert json.loads((root/'store/state/rejected-release.json').read_text())['id']=='1.2.3.5'
         check('hourly checks never retry a rejected release or interrupt the recovered server')
+        cache_release('1.2.3.6','no-console');result=updating('1.2.3.6',ok=False)
+        assert result.returncode and status()['ready'] and os.readlink(root/'releases/current')=='1.2.3.4'
+        assert (data/'worlds/data').read_text()=='original-world'
+        check('startup still requires console response and rolls back a listening but unresponsive candidate')
         assert any((root/'diagnostics').iterdir());check('failed startup leaves persistent diagnostic evidence')
         run('systemctl','stop',unit);assert status()['stopped'] and status()['child_exit']==0
         transaction={'id':'simulated-interruption','kind':'maintenance','phase':'applying','old_release':'1.2.3.4','snapshot':sid,'was_active':True,'owner':99999999,'owner_start':'not-running','boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
@@ -223,6 +251,7 @@ allowed_users = ["642606556151545857"]
         active_release=(root/'releases/current').resolve()
         (active_release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']
         status_file=root/'runtime/status.json';status_file.unlink();status_file.mkdir()
+        run('systemctl','--no-block','stop',unit)
         try:
             until=time.monotonic()+10
             while time.monotonic()<until:

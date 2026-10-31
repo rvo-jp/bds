@@ -1,5 +1,6 @@
 //! Isolated acceptance-test fixture; never used for a real world.
 use std::{
+    fs::OpenOptions,
     io::{self, BufRead, Write},
     net::TcpListener,
 };
@@ -22,6 +23,21 @@ fn main() {
     io::stdout().flush().unwrap();
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
+        writeln!(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open("worlds/commands.log")
+                .unwrap(),
+            "{line}"
+        )
+        .unwrap();
+        if line == "close-output" {
+            unsafe {
+                libc::close(libc::STDOUT_FILENO);
+            }
+            continue;
+        }
         if line == "stop" {
             if mode.trim() == "large-stop-output" {
                 io::stdout().write_all(&vec![b'x'; 1024 * 1024]).unwrap();

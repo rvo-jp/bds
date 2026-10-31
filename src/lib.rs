@@ -8,3 +8,4 @@ pub mod supervisor;
 pub mod util;
 
 mod http;
+mod signals;

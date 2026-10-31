@@ -12,9 +12,7 @@ user = "bds"
 unit = "bds.service"
 startup_seconds = 120
 stable_seconds = 15
-health_seconds = 30
 response_seconds = 10
-failure_limit = 3
 restart_seconds = 30
 start_limit = 3
 
