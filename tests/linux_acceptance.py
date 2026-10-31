@@ -17,7 +17,7 @@ def port():
 
 def main():
     assert os.geteuid()==0 and sys.platform=='linux'
-    source=pathlib.Path(sys.argv[1]).resolve();fake=pathlib.Path(sys.argv[2]).resolve();updater=fake.with_name("auto_update")
+    source=pathlib.Path(sys.argv[1]).resolve();fake=pathlib.Path(sys.argv[2]).resolve();updater=fake.with_name("auto_update");initializer=fake.with_name("initialize")
     token=uuid.uuid4().hex[:8];user='bds-test-'+token;unit='bds-smoke-'+token+'.service';receiver='bds-smoke-discord-'+token+'.service'
     root=pathlib.Path(tempfile.mkdtemp(prefix='bdsctl-smoke-',dir='/run'));root.chmod(0o755)
     units=[];created=False;binary=root/'bdsctl';shutil.copy2(source,binary)
@@ -84,6 +84,13 @@ allowed_users = ["642606556151545857"]
         assert '*:00:00 Asia/Tokyo' in (root/'generated/bds-update.timer').read_text()
         assert ' auto-update' in (root/'generated/bds-update.service').read_text()
         run('systemctl','start',unit,receiver);assert status()['ready'];check('systemd READY requires owned TCP listener and console response')
+        # Neither recovery entry point may mutate a running BDS release.
+        invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
+        def release_links():return {str(p):p.lstat().st_ino for p in release.rglob('*') if p.is_symlink()}
+        links=release_links()
+        assert ctl('recover',ok=False).returncode and ctl('start-check',ok=False).returncode
+        assert links==release_links() and status()['invocation']==invocation and (data/'worlds/commands.log').read_bytes()==commands
+        check('manual and startup-only recovery refuse live BDS without replacing its links')
         # Both resident Rust processes, excluding the fake Minecraft child.
         pids=[int(run('systemctl','show',u,'-p','MainPID','--value').stdout) for u in units]
         def cpu_ticks(pid):return sum(map(int,pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[11:13]))
@@ -358,6 +365,33 @@ allowed_users = ["642606556151545857"]
         importing('recover');assert (imported/'store/data/worlds/data').read_text()=='import-world';assert not marker.exists()
         marker.write_text(json.dumps(record));importing('recover');assert not marker.exists()
         check('initial import recovers interruption before publication and after activation')
+        # New initialization shares the same durable publication as both import paths.
+        initialized=root/'initialized';cached=initialized/'releases/1.2.3.4';cached.mkdir(parents=True)
+        shutil.copy2(fake,cached/'bedrock_server');(cached/'release.json').write_text(json.dumps({'id':'1.2.3.4','url':'fixture','sha256':'fixture'}))
+        (cached/'world_templates').write_text('fail after data publication')
+        init_config=root/'init-config.toml';text=(root/'config.toml').read_text()
+        for name in ['store','releases','runtime','diagnostics','discord']:text=text.replace(f'{root}/{name}"',f'{initialized}/{name}"')
+        init_config.write_text(text)
+        def initializing(*args,ok=True):return run(binary,'--config',init_config,*args,ok=ok)
+        def init_version(version,ok=True):return run(initializer,init_config,version,ok=ok)
+        result=init_version('1.2.3.4',ok=False)
+        marker=initialized/'store/state/import.json'
+        assert result.returncode and marker.exists() and (initialized/'store/data').is_dir() and not (initialized/'releases/current').exists()
+        # Keep an administrator's edits across retries, without checking a newer release.
+        preserved=initialized/'store/data/worlds/preserved';preserved.write_text('retain initialized data')
+        (cached/'world_templates').unlink();init_version('offline')
+        assert not marker.exists() and os.readlink(initialized/'releases/current')=='1.2.3.4' and preserved.read_text()=='retain initialized data'
+        assert initializing('init',ok=False).returncode
+        check('interrupted init resumes through its durable checkpoint without downloads or overwrites')
+        stage=initialized/'store/.import-init-interrupted';(initialized/'store/data').rename(stage);(initialized/'releases/current').unlink()
+        record={'release':'1.2.3.4','stage':stage.name};marker.write_text(json.dumps(record))
+        initializing('recover');assert preserved.read_text()=='retain initialized data' and not marker.exists()
+        marker.write_text(json.dumps(record));initializing('recover');assert not marker.exists()
+        # Unknown data has no checkpoint and must never be silently adopted or erased.
+        (initialized/'releases/current').unlink()
+        assert initializing('recover',ok=False).returncode and initializing('init',ok=False).returncode
+        assert preserved.read_text()=='retain initialized data'
+        check('init recovery handles publication boundaries and rejects unknown preexisting data')
         # A status write failure must not deadlock BDS on its stdout pipe.
         active_release=(root/'releases/current').resolve()
         (active_release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']

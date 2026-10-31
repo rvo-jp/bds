@@ -60,7 +60,7 @@ pub fn end(c: &Config) -> Result<()> {
         "停止が完了していません。maintenance-beginを再実行してください"
     );
     operations::ensure_stopped(c)?;
-    operations::recover_locked(c)?;
+    operations::prepare_after_maintenance(c)?;
     let result = (|| {
         fs::remove_file(mode_path(c))?;
         fs::File::open(c.state())?.sync_all()?;

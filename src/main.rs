@@ -128,10 +128,7 @@ fn run() -> Result<()> {
                 "maintenance-end" => admin::end(&c)?,
                 "inventory" => admin::inventory(&c)?,
                 "deployment-check" => admin::deployment_check(&c)?,
-                "start-check" => {
-                    admin::ensure_available(&c)?;
-                    operations::recover(&c)?;
-                }
+                "start-check" => operations::start_check(&c)?,
                 "import-package" => recovery::import(&c, Path::new(value(0)?))?,
                 "recover" => operations::recover(&c)?,
                 "init" => operations::init(&c)?,

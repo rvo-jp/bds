@@ -209,10 +209,7 @@ fn extract(c: &Config, source: &Path, dest: &Path) -> Result<()> {
 pub fn import(c: &Config, source: &Path) -> Result<()> {
     let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
     operations::ensure_stopped(c)?;
-    ensure!(
-        !c.current().exists() && !c.data().exists(),
-        "新規の保存先にだけ取り込めます。既存ワールドは上書きしません"
-    );
+    operations::ensure_empty_destination(c)?;
     ensure!(
         !c.state().join("transaction.json").exists() && !c.state().join("import.json").exists(),
         "中断記録を先にrecoverしてください"
@@ -304,7 +301,7 @@ pub fn import(c: &Config, source: &Path) -> Result<()> {
     let data_stage = c.paths.store.join(format!(".import-{}", util::nonce()?));
     fs::rename(work.join("data"), &data_stage)?;
     // Ownership transfers to the durable import checkpoint; never delete it on a failed publish.
-    operations::publish_import(c, s.release, &data_stage)?;
+    operations::publish_initial_data(c, s.release, util::CleanupDir(data_stage))?;
     println!(
         "ワールドと同じ版のMinecraft本体を復元しました。起動・タイマー有効化は行っていません。接続先のconfig.tomlを維持しています。Webhook・Caddy・通信許可は別途設定してください。"
     );

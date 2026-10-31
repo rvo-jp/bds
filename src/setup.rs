@@ -12,19 +12,148 @@ pub fn units(c: &Config, binary: &Path, config: &Path) -> Result<BTreeMap<String
     let mut out = BTreeMap::new();
     let startup = c.server.startup_seconds + c.server.stable_seconds + 15;
     let interval = 600.max((startup + c.server.restart_seconds) * c.server.start_limit as u64 + 60);
-    out.insert(c.server.unit.clone(),format!("[Unit]\nDescription=Minecraft Bedrock server\nConditionPathExists={}\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec={interval}\nStartLimitBurst={}\n\n[Service]\nType=notify\nNotifyAccess=main\nUser=bds\nGroup=bds\nExecStartPre=+{exec} start-check\nExecStart={exec} supervise\nRestart=on-failure\nRestartSec={}\nTimeoutStartSec=infinity\nTimeoutStopSec=infinity\nKillMode=mixed\nSendSIGKILL=no\nRuntimeDirectory=bds\nRuntimeDirectoryMode=0750\nRuntimeDirectoryPreserve=yes\nStateDirectory=bds-supervisor\nStateDirectoryMode=0700\nUMask=0027\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nReadWritePaths={} {} {} {}\n\n[Install]\nWantedBy=multi-user.target\n",format_args!("!{}", crate::admin::mode_path(c).display()),c.server.start_limit,c.server.restart_seconds,quote(&c.paths.store),quote(&c.paths.releases),quote(&c.paths.runtime),quote(&c.paths.diagnostics)));
+    out.insert(
+        c.server.unit.clone(),
+        format!(
+            r#"[Unit]
+Description=Minecraft Bedrock server
+ConditionPathExists={}
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec={interval}
+StartLimitBurst={}
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=bds
+Group=bds
+ExecStartPre=+{exec} start-check
+ExecStart={exec} supervise
+Restart=on-failure
+RestartSec={}
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+KillMode=mixed
+SendSIGKILL=no
+RuntimeDirectory=bds
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+StateDirectory=bds-supervisor
+StateDirectoryMode=0700
+UMask=0027
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths={} {} {} {}
+
+[Install]
+WantedBy=multi-user.target
+"#,
+            format_args!("!{}", crate::admin::mode_path(c).display()),
+            c.server.start_limit,
+            c.server.restart_seconds,
+            quote(&c.paths.store),
+            quote(&c.paths.releases),
+            quote(&c.paths.runtime),
+            quote(&c.paths.diagnostics)
+        ),
+    );
     for (name, command) in [
         ("bds-daily", "daily"),
         ("bds-update", "auto-update"),
         ("bds-discord-restart", "discord-job restart"),
         ("bds-discord-reboot", "discord-job reboot"),
     ] {
-        out.insert(format!("{name}.service"),format!("[Unit]\nDescription=BDS {command}\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nType=oneshot\nExecStart={exec} {command}\nTimeoutStartSec=infinity\nTimeoutStopSec=infinity\nKillMode=control-group\nSendSIGKILL=no\nNice=10\nCPUWeight=20\nIOWeight=20\nUMask=0077\n"));
+        out.insert(
+            format!("{name}.service"),
+            format!(
+                r#"[Unit]
+Description=BDS {command}
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart={exec} {command}
+TimeoutStartSec=infinity
+TimeoutStopSec=infinity
+KillMode=control-group
+SendSIGKILL=no
+Nice=10
+CPUWeight=20
+IOWeight=20
+UMask=0077
+"#
+            ),
+        );
     }
-    out.insert("bds-daily.timer".into(),"[Unit]\nDescription=Daily offline BDS backup\n[Timer]\nOnCalendar=*-*-* 04:30:00 Asia/Tokyo\nAccuracySec=1s\nPersistent=false\n[Install]\nWantedBy=timers.target\n".into());
-    out.insert("bds-update.timer".into(),"[Unit]\nDescription=Check and install BDS updates hourly\n[Timer]\nOnCalendar=*-*-* *:00:00 Asia/Tokyo\nRandomizedDelaySec=5m\nAccuracySec=1s\nPersistent=true\n[Install]\nWantedBy=timers.target\n".into());
-    out.insert("bds-discord.service".into(),format!("[Unit]\nDescription=BDS Discord HTTP interactions\nWants=network-online.target\nAfter=network-online.target\nStartLimitIntervalSec=600\nStartLimitBurst=3\n[Service]\nType=notify\nUser=bds-discord\nGroup=bds-discord\nExecStart={exec} discord\nRestart=on-failure\nRestartSec=10\nTimeoutStartSec=30\nStateDirectory=bds-discord\nStateDirectoryMode=0700\nUMask=0077\nNoNewPrivileges=yes\nProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nPrivateDevices=yes\nRestrictSUIDSGID=yes\nReadWritePaths={}\n[Install]\nWantedBy=multi-user.target\n",quote(&c.paths.discord_state)));
-    out.insert("50-bds-discord.rules".into(),"// Only the two fixed root jobs may be started by the Discord receiver.\npolkit.addRule(function(action, subject) {\n  if (subject.user === 'bds-discord' && action.id === 'org.freedesktop.systemd1.manage-units' && action.lookup('verb') === 'start' && (action.lookup('unit') === 'bds-discord-restart.service' || action.lookup('unit') === 'bds-discord-reboot.service')) return polkit.Result.YES;\n});\n".into());
+    out.insert(
+        "bds-daily.timer".into(),
+        r#"[Unit]
+Description=Daily offline BDS backup
+[Timer]
+OnCalendar=*-*-* 04:30:00 Asia/Tokyo
+AccuracySec=1s
+Persistent=false
+[Install]
+WantedBy=timers.target
+"#
+        .into(),
+    );
+    out.insert(
+        "bds-update.timer".into(),
+        r#"[Unit]
+Description=Check and install BDS updates hourly
+[Timer]
+OnCalendar=*-*-* *:00:00 Asia/Tokyo
+RandomizedDelaySec=5m
+AccuracySec=1s
+Persistent=true
+[Install]
+WantedBy=timers.target
+"#
+        .into(),
+    );
+    out.insert(
+        "bds-discord.service".into(),
+        format!(
+            r#"[Unit]
+Description=BDS Discord HTTP interactions
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=3
+[Service]
+Type=notify
+User=bds-discord
+Group=bds-discord
+ExecStart={exec} discord
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=30
+StateDirectory=bds-discord
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+RestrictSUIDSGID=yes
+ReadWritePaths={}
+[Install]
+WantedBy=multi-user.target
+"#,
+            quote(&c.paths.discord_state)
+        ),
+    );
+    out.insert("50-bds-discord.rules".into(),r#"// Only the two fixed root jobs may be started by the Discord receiver.
+polkit.addRule(function(action, subject) {
+  if (subject.user === 'bds-discord' && action.id === 'org.freedesktop.systemd1.manage-units' && action.lookup('verb') === 'start' && (action.lookup('unit') === 'bds-discord-restart.service' || action.lookup('unit') === 'bds-discord-reboot.service')) return polkit.Result.YES;
+});
+"#.into());
     out.insert("bds-alert@.service".into(),format!("[Unit]\nDescription=BDS failure notification\n[Service]\nType=oneshot\nExecStart={exec} notify-failure %i\nTimeoutStartSec=25\nUMask=0077\n"));
     for (name, text) in out.iter_mut() {
         if name.ends_with(".service") && name != "bds-alert@.service" {

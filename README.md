@@ -67,7 +67,7 @@ sudo bdsctl reboot
 
 `restore`はファイルの検証とコピーを済ませてから停止し、現在のワールドを保護バックアップへ保存して置き換えます。復元先はバックアップと別のファイルになります。処理の競合は共通ロックで防止し、手動操作は待たずに拒否、日次バックアップと定期更新は最大5分待機します。待機後に現在の版を再確認するため、同じ版を二重に適用しません。
 
-異常時は`journalctl -u bds.service`、`/var/lib/bds-supervisor`、`/var/lib/bds/state/transaction.json`を確認してください。中断記録があるときは、停止を確認した上で`sudo bdsctl recover`を実行します。起動前にも同じ復旧処理を実行します。自動起動の上限に達した場合は、原因を直してから`systemctl reset-failed bds.service`で解除します。
+異常時は`journalctl -u bds.service`、`/var/lib/bds-supervisor`、`/var/lib/bds/state/transaction.json`を確認してください。中断記録があるときは、停止を確認した上で`sudo bdsctl recover`を実行します。手動の`recover`はBDSが完全停止している場合だけ許可し、稼働中にはリンクやデータを変更しません。起動前にも同じ復旧処理を実行しますが、サービスの起動前処理自身だけが動いていることを確認します。自動起動の上限に達した場合は、原因を直してから`systemctl reset-failed bds.service`で解除します。
 
 ## Discord
 
@@ -88,6 +88,10 @@ unset BDS_REGISTER_TOKEN
 受付後にプロセスが終了して実行結果を確定できなくなっても、同じ操作を自動で送り直しません。結果不明の操作は管理者がサービス状態と操作結果ファイルを確認し、[運用上の復旧手順](docs/operations.md)に従って解除します。
 
 入退室通知は`Steve がログインしました。`・`Steve がログアウトしました。`です。通知は上限付きの別キューで送り、Discordの遅延でBDSの監督を止めません。通知先の障害やキュー超過では通知を失うことがあります。
+
+## 新規ワールドの初期化
+
+`sudo bdsctl init`はデータのない保存先にだけ新規構築します。初期化・旧データ移行・アーカイブ取り込みは共通の確定処理を使い、`state/import.json`に処理中の版と配置先を記録します。途中で失敗した場合は、停止状態で原因を直し、`init`の再実行または`recover`で再開できます。記録のない既存データは上書き・自動採用しません。
 
 ## 開発・配布・設置
 
