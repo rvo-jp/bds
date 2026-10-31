@@ -34,7 +34,7 @@ LinuxのMinecraft Bedrock Dedicated Serverを管理するRust製の単一実行�
 
 バックアップ失敗時も、停止前に稼働していたBDSの復帰を試みます。手動で停止していたサーバーは、日次バックアップによって勝手に起動しません。日次タイマーは停止中の取り逃し分を起動直後に実行しません。更新タイマーは取り逃した場合、起動後にも確認します。
 
-毎朝のバックアップは最新14回分、手動・更新前のバックアップは別枠で最新14回分を保持します（`retention`と`extra_retention`）。実行をスキップ・失敗した日は含まれず、14日連続の保存を保証するものではありません。保護した世代と復元直前の安全用バックアップは自動削除しません。保持中のバックアップに必要なBDS本体も残します。復元に失敗したデータは`/var/lib/bds/failures`へ退避するため、調査後に管理者が整理してください。同一VPS内のバックアップだけではVPS・ディスク全体の障害に備えられないため、必要な世代は`export`して外部へ保管します。アーカイブには対応するMinecraft本体、ワールド・設定・独自パック、公開管理設定、SHA-256一覧を含めます。Webhookなどの秘密情報、Caddy、通信許可設定と管理ツール自体は含めません。別VPSへの復元は[運用手順](docs/operations.md)を参照してください。
+毎朝のバックアップは最新14回分、手動・更新前のバックアップは別枠で最新14回分を保持します（`retention`と`extra_retention`）。実行をスキップ・失敗した日は含まれず、14日連続の保存を保証するものではありません。保護した世代と復元直前の安全用バックアップは自動削除しません。保持中のバックアップに必要なBDS本体も残します。復元に失敗したデータは`/var/lib/bds/failures`へ退避するため、調査後に管理者が整理してください。バックアップはVPS内で保存・管理し、外部保存先への転送は行いません。必要時には`export`で手動書き出しができます。アーカイブには対応するMinecraft本体、ワールド・設定・独自パック、公開管理設定、SHA-256一覧を含めます。Webhookなどの秘密情報、Caddy、通信許可設定と管理ツール自体は含めません。別VPSへの復元は[運用手順](docs/operations.md)を参照してください。
 
 ## 操作
 
@@ -55,9 +55,9 @@ sudo bdsctl verify BACKUP_ID
 sudo bdsctl protect BACKUP_ID
 sudo bdsctl unprotect BACKUP_ID
 sudo bdsctl restore BACKUP_ID
-sudo bdsctl export BACKUP_ID /外部への転送用/backup.tar.zst
+sudo bdsctl export BACKUP_ID /var/backups/bds-recovery.tar.zst
 # 新規VPSへの復元（既存ワールドには上書き不可）
-sudo bdsctl import-package /外部から戻した/backup.tar.zst
+sudo bdsctl import-package /var/backups/bds-recovery.tar.zst
 sudo bdsctl reboot
 ```
 
