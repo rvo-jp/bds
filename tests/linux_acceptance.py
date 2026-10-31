@@ -214,7 +214,18 @@ allowed_users = ["642606556151545857"]
         run('systemctl','stop',unit);assert status()['stopped'] and status()['child_exit']==0
         transaction={'id':'simulated-interruption','kind':'maintenance','phase':'applying','old_release':'1.2.3.4','snapshot':sid,'was_active':True,'owner':99999999,'owner_start':'not-running','boot':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip()}
         (root/'store/state/transaction.json').write_text(json.dumps(transaction));(data/'worlds/data').write_text('interrupted-new-version');(root/'releases/current').unlink();os.symlink('1.2.3.5',root/'releases/current')
-        ctl('recover');assert (data/'worlds/data').read_text()=='original-world';assert os.readlink(root/'releases/current')=='1.2.3.4';run('systemctl','start',unit);assert status()['ready'];check('interrupted update recovers before next BDS start')
+        # Recovery can exceed the former service-wide 19s timeout (3+1+15).
+        assert 'TimeoutStartSec=infinity' in (root/'generated'/unit).read_text()
+        delayed=root/'delayed-start-check.sh';delayed.write_text(f'#!/bin/sh\nsleep 21\nexec "{binary}" --config "{root}/config.toml" start-check\n');delayed.chmod(0o755)
+        override=pathlib.Path('/run/systemd/system')/(unit+'.d');override.mkdir()
+        (override/'recovery.conf').write_text(f'[Service]\nExecStartPre=\nExecStartPre=+{delayed}\n')
+        try:
+            run('systemctl','daemon-reload');run('systemctl','start',unit)
+            assert (data/'worlds/data').read_text()=='original-world' and os.readlink(root/'releases/current')=='1.2.3.4' and status()['ready']
+        finally:
+            shutil.rmtree(override);run('systemctl','daemon-reload')
+        check('slow pre-start recovery outlives old service timeout and still applies BDS readiness deadlines')
+        check('interrupted update recovers before next BDS start')
         # Half-replaced directory after a power loss is recoverable too.
         run('systemctl','stop',unit);(root/'store/state/transaction.json').write_text(json.dumps(transaction));shutil.rmtree(data)
         ctl('recover');assert (data/'worlds/data').read_text()=='original-world';check('interrupted data-directory replacement is recoverable')
@@ -255,6 +266,23 @@ allowed_users = ["642606556151545857"]
         assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
         assert backup_ids()-existing
         check('daily backup remains independent and does not apply a staged update')
+        # A failed service must never turn its world into a successful daily generation.
+        existing=backup_ids();success=(root/'store/state/maintenance-success.json').read_bytes()
+        active_release=(root/'releases/current').resolve();(active_release/'mode').write_text('no-console')
+        run('systemctl','reset-failed',unit);run('systemctl','start',unit,ok=False)
+        until=time.monotonic()+15
+        while time.monotonic()<until:
+            state=run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()
+            if state=='failed':break
+            time.sleep(.05)
+        assert state=='failed' and status()['failed']
+        assert ctl('daily',ok=False).returncode and ctl('backup',ok=False).returncode
+        assert backup_ids()==existing and (root/'store/state/maintenance-success.json').read_bytes()==success
+        run('systemctl','reset-failed',unit)
+        assert ctl('daily',ok=False).returncode, 'reset-failed must not forge a clean stop'
+        assert backup_ids()==existing and not (root/'store/state/transaction.json').exists()
+        (active_release/'mode').unlink()
+        check('abnormal exit and reset-failed cannot publish normal backups or prune healthy generations')
         # Restore an export into independent paths, without any download or source checkout.
         recovery=root/'recovered';recovery.mkdir()
         for name in ['store','releases','runtime','diagnostics','discord']:(recovery/name).mkdir()
@@ -306,6 +334,17 @@ allowed_users = ["642606556151545857"]
         for name in ['store','releases','runtime','diagnostics','discord']:text=text.replace(f'{root}/{name}"',f'{imported}/{name}"')
         import_config.write_text(text)
         def importing(*args,ok=True):return run(binary,'--config',import_config,*args,ok=ok)
+        (cached/'behavior_packs/vanilla').mkdir(parents=True)
+        (cached/'behavior_packs/vanilla/kept.json').write_text('vendor')
+        (cached/'behavior_packs/vanilla/deleted.json').write_text('vendor')
+        (old/'behavior_packs/vanilla').mkdir(parents=True);(old/'behavior_packs/vanilla/kept.json').write_text('vendor')
+        assert importing('import-legacy',old,ok=False).returncode
+        assert not (imported/'store/data').exists() and not (imported/'releases/current').exists() and not (imported/'store/state/import.json').exists()
+        shutil.rmtree(old/'behavior_packs/vanilla')
+        assert importing('import-legacy',old,ok=False).returncode
+        assert not (imported/'store/data').exists() and not (imported/'store/state/import.json').exists()
+        shutil.copytree(cached/'behavior_packs/vanilla',old/'behavior_packs/vanilla')
+        check('legacy import refuses removed vendor files and entire packs before publishing any data')
         result=importing('import-legacy',old,ok=False);assert result.returncode and (imported/'store/state/import.json').exists()
         assert (imported/'store/data/worlds/data').read_text()=='import-world'
         assert importing('restart',ok=False).returncode

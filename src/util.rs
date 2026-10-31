@@ -301,6 +301,52 @@ pub fn tree_bytes(root: &Path) -> Result<u64> {
             .context("データサイズが上限を超えます")
     })
 }
+/// Estimate live data using one metadata read per entry. LevelDB may remove files
+/// during the scan; only NotFound is tolerated. Offline operations use tree_bytes.
+pub fn estimate_tree_bytes(root: &Path) -> Result<u64> {
+    fn walk(path: &Path) -> Result<u64> {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e.into()),
+        };
+        let mut bytes = 0u64;
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            let path = entry.path();
+            let m = match fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(e.into()),
+            };
+            ensure!(
+                !m.file_type().is_symlink(),
+                "データ内のリンクは見積もりできません: {}",
+                path.display()
+            );
+            let n = if m.is_dir() {
+                walk(&path)?
+            } else {
+                ensure!(m.is_file(), "特殊ファイルは扱えません");
+                m.len()
+            };
+            bytes = bytes
+                .checked_add(n)
+                .context("データサイズが上限を超えます")?;
+        }
+        Ok(bytes)
+    }
+    ensure!(
+        fs::symlink_metadata(root)?.is_dir(),
+        "対象のルートは通常のディレクトリにしてください"
+    );
+    walk(root)
+}
+
 pub fn reserve(c: &crate::config::Config, bytes: u64) -> Result<()> {
     let minimum = c
         .maintenance

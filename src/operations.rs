@@ -109,6 +109,25 @@ pub fn ensure_stopped(c: &Config) -> Result<()> {
     }
     Ok(())
 }
+/// A stopped process alone is not proof that its world was saved normally.
+pub fn ensure_clean_backup_source(c: &Config) -> Result<()> {
+    ensure_stopped(c)?;
+    ensure!(
+        util::prop(&c.server.unit, "ActiveState")? == "inactive",
+        "異常停止中のデータを通常バックアップには保存しません。診断記録を確認してください"
+    );
+    let s = supervisor::status(c)
+        .context("正常終了記録がありません。通常バックアップには起動・正常停止の確認が必要です")?;
+    ensure!(
+        s.stopped
+            && !s.failed
+            && s.child_exit == Some(0)
+            && s.boot == util::boot()
+            && !s.invocation.is_empty(),
+        "正常終了を確認できないデータを通常バックアップには保存しません。診断記録を確認してください"
+    );
+    Ok(())
+}
 pub fn stop(c: &Config) -> Result<()> {
     let invocation = util::prop(&c.server.unit, "InvocationID")?;
     util::systemctl(&["stop", &c.server.unit])?;
@@ -167,13 +186,14 @@ pub fn start(c: &Config) -> Result<()> {
     result
 }
 fn start_wait(c: &Config) -> Result<()> {
+    // systemctl waits for recovery too; only BDS retries use the deadline below.
+    let _ = util::systemctl(&["start", &c.server.unit]);
     let deadline = Instant::now()
         + Duration::from_secs(
             (c.server.startup_seconds + c.server.stable_seconds + 60 + c.server.restart_seconds)
                 * c.server.start_limit as u64
                 + 30,
         );
-    let _ = util::systemctl(&["start", &c.server.unit]);
     while Instant::now() < deadline {
         let state = util::prop(&c.server.unit, "ActiveState")?;
         if state == "active" {
@@ -451,7 +471,7 @@ fn maintenance_locked(
 ) -> Result<snapshots::Snapshot> {
     let was_active = active(c)?;
     if !was_active {
-        ensure_stopped(c)?;
+        ensure_clean_backup_source(c)?;
     }
     capacity_preflight(c, candidate.as_ref())?;
     notice(
@@ -620,7 +640,7 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
     let target_bytes = target.files.values().try_fold(0u64, |sum, f| {
         sum.checked_add(f.bytes).context("サイズが不正です")
     })?;
-    let current_bytes = util::tree_bytes(&c.data())?;
+    let current_bytes = util::estimate_tree_bytes(&c.data())?;
     util::reserve(
         c,
         target_bytes
@@ -769,6 +789,14 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
         for key in releases::PACKS {
             fs::create_dir_all(stage.join(key))?;
             let from = directory.join(key);
+            let vendor_root = c.paths.releases.join(&version).join(key);
+            if vendor_root.is_dir() {
+                // Check every vendor pack, including packs removed in the legacy tree.
+                for vendor in fs::read_dir(&vendor_root)? {
+                    let vendor = vendor?;
+                    releases::verify_vendor_pack(&from.join(vendor.file_name()), &vendor.path())?;
+                }
+            }
             if !from.exists() {
                 continue;
             }
@@ -780,16 +808,7 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
                     .join(&version)
                     .join(key)
                     .join(entry.file_name());
-                if vendor.exists() {
-                    for rel in util::files(&entry.path())? {
-                        let other = vendor.join(&rel);
-                        ensure!(
-                            other.is_file()
-                                && util::hash(&entry.path().join(&rel))? == util::hash(&other)?,
-                            "公式パックの直接編集を検出しました。独自パックへ分離してから移行してください"
-                        );
-                    }
-                } else {
+                if !vendor.exists() {
                     util::copy_tree(&entry.path(), &stage.join(key).join(entry.file_name()))?;
                 }
             }
@@ -841,7 +860,7 @@ pub fn capacity_preflight(c: &Config, candidate: Option<&releases::Release>) -> 
             "更新候補が不完全です"
         );
     }
-    let bytes = util::tree_bytes(&c.data())?;
+    let bytes = util::estimate_tree_bytes(&c.data())?;
     util::reserve(
         c,
         bytes

@@ -402,3 +402,63 @@ fn discord_explains_maintenance_without_creating_a_job() {
     assert!(reply["data"]["content"].as_str().unwrap().contains("保守"));
     assert!(!f.c.paths.discord_state.join("job.json").exists());
 }
+
+#[test]
+fn live_capacity_estimate_tolerates_leveldb_file_replacement() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let f = Fixture::new();
+    let db = f.c.data().join("worlds/db");
+    fs::create_dir_all(&db).unwrap();
+    fs::write(db.join("stable.ldb"), b"stable-data").unwrap();
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = running.clone();
+    let transient = db.clone();
+    let worker = std::thread::spawn(move || {
+        while flag.load(Ordering::Relaxed) {
+            for i in 0..30 {
+                let p = transient.join(format!("compacting-{i}.ldb"));
+                fs::write(&p, b"replacement").unwrap();
+                fs::remove_file(p).unwrap();
+            }
+        }
+    });
+    let result = (|| -> anyhow::Result<()> {
+        for _ in 0..300 {
+            assert!(util::estimate_tree_bytes(&f.c.data())? >= 11);
+            bdsctl::operations::capacity_preflight(&f.c, None)?;
+        }
+        Ok(())
+    })();
+    running.store(false, Ordering::Relaxed);
+    worker.join().unwrap();
+    result.unwrap();
+    assert_eq!(util::tree_bytes(&f.c.data()).unwrap(), 11);
+    symlink("/etc/passwd", db.join("invalid-link")).unwrap();
+    assert!(util::estimate_tree_bytes(&f.c.data()).is_err());
+    assert!(util::files(&f.c.data()).is_err());
+}
+
+#[test]
+fn legacy_vendor_comparison_rejects_deleted_added_and_changed_files() {
+    let f = Fixture::new();
+    let original = f.root.join("official-pack");
+    fs::create_dir_all(original.join("nested")).unwrap();
+    fs::write(original.join("nested/kept.json"), "original").unwrap();
+    fs::write(original.join("removed.json"), "must remain").unwrap();
+    let legacy = f.root.join("legacy-pack");
+    util::copy_tree(&original, &legacy).unwrap();
+    releases::verify_vendor_pack(&legacy, &original).unwrap();
+    fs::remove_file(legacy.join("removed.json")).unwrap();
+    assert!(releases::verify_vendor_pack(&legacy, &original).is_err());
+    fs::copy(original.join("removed.json"), legacy.join("removed.json")).unwrap();
+    fs::write(legacy.join("added.json"), "extra").unwrap();
+    assert!(releases::verify_vendor_pack(&legacy, &original).is_err());
+    fs::remove_file(legacy.join("added.json")).unwrap();
+    fs::write(legacy.join("nested/kept.json"), "changed").unwrap();
+    assert!(releases::verify_vendor_pack(&legacy, &original).is_err());
+    fs::remove_dir_all(legacy).unwrap();
+    assert!(releases::verify_vendor_pack(&f.root.join("legacy-pack"), &original).is_err());
+}

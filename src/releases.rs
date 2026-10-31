@@ -323,3 +323,19 @@ pub fn prune(c: &Config, protected: &[String]) -> Result<()> {
     }
     Ok(())
 }
+
+/// Reject additions, removals and content edits before publishing a legacy import.
+pub fn verify_vendor_pack(legacy: &Path, vendor: &Path) -> Result<()> {
+    let message = "公式パックの直接編集（追加・削除を含む）を検出しました。独自パックへ分離してから移行してください";
+    let actual = util::files(legacy).context(message)?;
+    let expected = util::files(vendor)?;
+    ensure!(actual == expected, "{message}: {}", legacy.display());
+    for rel in actual {
+        ensure!(
+            util::hash(&legacy.join(&rel))? == util::hash(&vendor.join(&rel))?,
+            "{message}: {}",
+            legacy.join(&rel).display()
+        );
+    }
+    Ok(())
+}
