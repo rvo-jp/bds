@@ -60,14 +60,18 @@ WantedBy=multi-user.target
             quote(&c.paths.diagnostics)
         ),
     );
-    for (name, command) in [
-        ("bds-daily", "daily"),
-        ("bds-update", "auto-update"),
-        ("bds-discord-restart", "discord-job restart"),
-        ("bds-discord-reboot", "discord-job reboot"),
-    ] {
+    for (name, command) in [("bds-daily", "daily"), ("bds-update", "auto-update")]
+        .into_iter()
+        .map(|(name, command)| (format!("{name}.service"), command.to_string()))
+        .chain(
+            crate::discord::Action::ALL
+                .iter()
+                .copied()
+                .map(|action| (action.unit(), format!("discord-job {action}"))),
+        )
+    {
         out.insert(
-            format!("{name}.service"),
+            name,
             format!(
                 r#"[Unit]
 Description=BDS {command}
@@ -149,12 +153,29 @@ WantedBy=multi-user.target
             quote(&c.paths.discord_state)
         ),
     );
-    out.insert("50-bds-discord.rules".into(),r#"// Only the two fixed root jobs may be started by the Discord receiver.
-polkit.addRule(function(action, subject) {
-  if (subject.user === 'bds-discord' && action.id === 'org.freedesktop.systemd1.manage-units' && action.lookup('verb') === 'start' && (action.lookup('unit') === 'bds-discord-restart.service' || action.lookup('unit') === 'bds-discord-reboot.service')) return polkit.Result.YES;
-});
-"#.into());
-    out.insert("bds-alert@.service".into(),format!("[Unit]\nDescription=BDS failure notification\n[Service]\nType=oneshot\nExecStart={exec} notify-failure %i\nTimeoutStartSec=25\nUMask=0077\n"));
+    let allowed_units = crate::discord::Action::ALL
+        .iter()
+        .map(|action| format!("action.lookup('unit') === '{}'", action.unit()))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    out.insert("50-bds-discord.rules".into(), format!(r#"// Only the two fixed root jobs may be started by the Discord receiver.
+polkit.addRule(function(action, subject) {{
+  if (subject.user === 'bds-discord' && action.id === 'org.freedesktop.systemd1.manage-units' && action.lookup('verb') === 'start' && ({allowed_units})) return polkit.Result.YES;
+}});
+"#));
+    out.insert(
+        "bds-alert@.service".into(),
+        format!(
+            r#"[Unit]
+Description=BDS failure notification
+[Service]
+Type=oneshot
+ExecStart={exec} notify-failure %i
+TimeoutStartSec=25
+UMask=0077
+"#
+        ),
+    );
     for (name, text) in out.iter_mut() {
         if name.ends_with(".service") && name != "bds-alert@.service" {
             *text = text.replacen("[Unit]\n", "[Unit]\nOnFailure=bds-alert@%n.service\n", 1);

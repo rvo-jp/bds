@@ -1,35 +1,12 @@
 # 公開可能な設定。Webhook URL・Bot Tokenは書かないでください。
-[paths]
-store = "/var/lib/bds"
-releases = "/opt/bedrock/releases"
-runtime = "/run/bds"
-diagnostics = "/var/lib/bds-supervisor"
-discord_state = "/var/lib/bds-discord"
-webhook_file = "/etc/bds/webhook"
-
-[server]
-user = "bds"
-unit = "bds.service"
-startup_seconds = 120
-stable_seconds = 15
-response_seconds = 10
-restart_seconds = 30
-start_limit = 3
-
-[maintenance]
-notice_seconds = 60
-# 毎朝のバックアップ14回分と、それ以外14回分。保護済みは別枠。
-retention = 14
-extra_retention = 14
-minimum_free_mib = 1024
-lock_wait_seconds = 300
+# 既定値はコードで一元管理します。全項目の確認: bdsctl --default-config
+# このファイルにはDiscordを有効にするための上書きだけを記載します。
+# 保存先や保持数などを変える場合は、--default-config の対応項目を追加してください。
 
 [discord]
 enabled = true
-listen = "127.0.0.1:8765"
 application_id = "1555006504107511919"
 public_key = "1e0e5eafd3168ceedaba850d1228bac6947b6be9f0fd0b1a7f410521bb0a90c9"
 guild_id = "1506611823267414036"
 allowed_users = ["642606556151545857"]
 allowed_roles = ["1529826364268744754"]
-cooldown_seconds = 300

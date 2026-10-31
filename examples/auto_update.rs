@@ -1,6 +1,6 @@
 //! Isolated acceptance-test version source. Never included in production bundles.
 use anyhow::{Context, Result};
-use bdsctl::{config::Config, operations, util};
+use bdsctl::{config::Config, operations, releases, util};
 use std::path::Path;
 fn main() -> Result<()> {
     util::root()?;
@@ -10,9 +10,7 @@ fn main() -> Result<()> {
     operations::auto_update_with(&c, || {
         anyhow::ensure!(args[1] != "offline", "fixture: version source unavailable");
         let id = args.get(1).context("version")?.clone();
-        let url = format!(
-            "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-{id}.zip"
-        );
+        let url = releases::download_url(&id);
         Ok((id, url))
     })?;
     Ok(())

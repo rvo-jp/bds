@@ -78,11 +78,14 @@ pub fn latest() -> Result<(String, String)> {
     }
     bail!("公式の更新情報を取得できません")
 }
+const DOWNLOAD_PREFIX: &str =
+    "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-";
+pub fn download_url(version: &str) -> String {
+    format!("{DOWNLOAD_PREFIX}{version}.zip")
+}
 pub fn version_url(url: &str) -> Result<String> {
     ensure!(
-        url.starts_with(
-            "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-"
-        ),
+        url.starts_with(DOWNLOAD_PREFIX),
         "公式のLinux配布URL以外は使用しません"
     );
     let name = url.rsplit('/').next().unwrap();

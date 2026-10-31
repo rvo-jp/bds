@@ -4,6 +4,8 @@ LinuxのMinecraft Bedrock Dedicated Serverを管理するRust製の単一実行�
 
 ## 構成
 
+開発するソースの正本は、このGitリポジトリのチェックアウトです。既定設定は `src/config.rs` の定義から生成し、`bdsctl --default-config` で全項目を表示できます。`bds.toml.example` はDiscord連携の上書き例です。本番設定は `/etc/bds/config.toml` だけを編集し、設置処理は上書きしません。サービス定義とDiscord操作権限は同じコードから生成します。
+
 | 保存先 | 内容・所有者 |
 | --- | --- |
 | Gitチェックアウト | Rustソース・設定例・設置手順。ワールドと秘密情報を置かない |

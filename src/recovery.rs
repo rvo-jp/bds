@@ -207,11 +207,11 @@ fn extract(c: &Config, source: &Path, dest: &Path) -> Result<()> {
     result
 }
 pub fn import(c: &Config, source: &Path) -> Result<()> {
-    let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+    let _lock = crate::state::lock(c, 0)?;
     operations::ensure_stopped(c)?;
     operations::ensure_empty_destination(c)?;
     ensure!(
-        !c.state().join("transaction.json").exists() && !c.state().join("import.json").exists(),
+        !operations::TRANSACTION.exists(c) && !operations::PLACEMENT.exists(c),
         "中断記録を先にrecoverしてください"
     );
     let work = c.paths.store.join(format!(".recovery-{}", util::nonce()?));

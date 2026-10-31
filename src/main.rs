@@ -13,7 +13,7 @@ fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "bdsctl [--config /etc/bds/config.toml] COMMAND\n\nstatus | status-json | inventory | maintenance-begin | maintenance-end | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | import-package FILE | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
+            "bdsctl [--config /etc/bds/config.toml] COMMAND\n--default-config（既定設定を表示）\n\nstatus | status-json | inventory | maintenance-begin | maintenance-end | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | import-package FILE | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
         );
         return Ok(());
     }
@@ -23,6 +23,11 @@ fn run() -> Result<()> {
             env!("CARGO_PKG_VERSION"),
             option_env!("BDS_COMMIT").unwrap_or("development")
         );
+        return Ok(());
+    }
+    if args[0] == "--default-config" {
+        anyhow::ensure!(args.len() == 1, "--default-configに引数は不要です");
+        print!("{}", toml::to_string_pretty(&Config::default())?);
         return Ok(());
     }
     let config = if args[0] == "--config" {
@@ -89,12 +94,12 @@ fn run() -> Result<()> {
         }
         "protect" | "unprotect" => {
             util::root()?;
-            let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+            let _lock = operations::lock(&c, 0)?;
             snapshots::protect(&c, value(0)?, command == "protect")?
         }
         "export" => {
             util::root()?;
-            let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+            let _lock = operations::lock(&c, 0)?;
             snapshots::export(&c, value(0)?, Path::new(value(1)?))?
         }
         "supervise" => supervisor::run(&c)?,
@@ -134,19 +139,19 @@ fn run() -> Result<()> {
                 "init" => operations::init(&c)?,
                 "import-legacy" => operations::import_legacy(&c, Path::new(value(0)?))?,
                 "backup" => {
-                    operations::maintenance(&c, false, false)?;
+                    operations::maintenance(&c, operations::MaintenanceRequest::Backup)?;
                 }
                 "daily" => {
                     operations::daily(&c)?;
                 }
                 "update" => {
-                    operations::maintenance(&c, true, false)?;
+                    operations::maintenance(&c, operations::MaintenanceRequest::Update)?;
                 }
                 "auto-update" => {
                     operations::auto_update(&c)?;
                 }
                 "check-update" => {
-                    let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
+                    let _lock = operations::lock(&c, 0)?;
                     operations::check(&c)?;
                 }
                 "restart" => operations::restart(&c)?,

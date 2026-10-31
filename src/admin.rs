@@ -1,4 +1,5 @@
 //! On-demand administration. No resident tasks or periodic status writes.
+use crate::state::Record;
 use crate::{config::Config, operations, releases, snapshots, supervisor, util};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -7,13 +8,21 @@ use std::fs;
 pub struct MaintenanceMode {
     pub created: u64,
     pub was_active: bool,
-    pub phase: String,
+    pub phase: MaintenancePhase,
 }
+crate::model::text_enum! {
+    pub enum MaintenancePhase {
+        Stopping => "stopping",
+        Ready => "ready",
+    }
+}
+const MODE: Record<MaintenanceMode> = Record::new("maintenance-mode.json", 0o644);
+
 pub fn mode_path(c: &Config) -> std::path::PathBuf {
-    c.state().join("maintenance-mode.json")
+    MODE.path(c)
 }
 pub fn in_maintenance(c: &Config) -> bool {
-    mode_path(c).exists()
+    MODE.exists(c)
 }
 pub fn ensure_available(c: &Config) -> Result<()> {
     ensure!(
@@ -23,23 +32,18 @@ pub fn ensure_available(c: &Config) -> Result<()> {
     Ok(())
 }
 pub fn begin(c: &Config) -> Result<()> {
-    let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
-    ensure!(
-        !c.state().join("transaction.json").exists()
-            && !c.state().join("import.json").exists()
-            && !c.state().join("reboot-pending.json").exists(),
-        "中断記録・再起動要求を先に解決してください"
-    );
+    let _lock = crate::state::lock(c, 0)?;
+    operations::ensure_no_interruption(c)?;
     let mut m = if in_maintenance(c) {
-        util::read_json::<MaintenanceMode>(&mode_path(c))?
+        MODE.load(c)?
     } else {
         let m = MaintenanceMode {
             created: util::now(),
             was_active: operations::active(c)?,
-            phase: "stopping".into(),
+            phase: MaintenancePhase::Stopping,
         };
         // Inhibit starts before attempting to stop. A failed stop never releases this guard.
-        util::json(&mode_path(c), &m, 0o644)?;
+        MODE.save(c, &m)?;
         m
     };
     if operations::active(c)? {
@@ -47,23 +51,22 @@ pub fn begin(c: &Config) -> Result<()> {
         operations::stop(c)?;
     }
     operations::ensure_stopped(c)?;
-    m.phase = "ready".into();
-    util::json(&mode_path(c), &m, 0o644)?;
+    m.phase = MaintenancePhase::Ready;
+    MODE.save(c, &m)?;
     println!("保守中です。ワールド編集が終わるまでmaintenance-endを実行しないでください。");
     Ok(())
 }
 pub fn end(c: &Config) -> Result<()> {
-    let _lock = util::Lock::acquire(&c.paths.store.join("maintenance.lock"), 0)?;
-    let m: MaintenanceMode = util::read_json(&mode_path(c)).context("保守モードではありません")?;
+    let _lock = crate::state::lock(c, 0)?;
+    let m: MaintenanceMode = MODE.load(c).context("保守モードではありません")?;
     ensure!(
-        m.phase == "ready",
+        m.phase == MaintenancePhase::Ready,
         "停止が完了していません。maintenance-beginを再実行してください"
     );
     operations::ensure_stopped(c)?;
     operations::prepare_after_maintenance(c)?;
     let result = (|| {
-        fs::remove_file(mode_path(c))?;
-        fs::File::open(c.state())?.sync_all()?;
+        MODE.remove(c)?;
         if m.was_active {
             operations::start(c)?;
         }
@@ -71,7 +74,7 @@ pub fn end(c: &Config) -> Result<()> {
     })();
     if let Err(e) = result {
         // Includes a directory-sync failure after removing the guard.
-        let saved = util::json(&mode_path(c), &m, 0o644);
+        let saved = MODE.save(c, &m);
         if m.was_active {
             let _ = util::systemctl(&["stop", &c.server.unit]);
         }
@@ -126,7 +129,7 @@ pub fn status(c: &Config) -> Result<()> {
         releases::current(c).unwrap_or_else(|_| "未設定".into())
     );
     if in_maintenance(c) {
-        let m: MaintenanceMode = util::read_json(&mode_path(c))?;
+        let m: MaintenanceMode = MODE.load(c)?;
         println!(
             "保守: {} / {} から / 終了時{}",
             m.phase,
@@ -140,13 +143,18 @@ pub fn status(c: &Config) -> Result<()> {
     } else {
         println!("保守: 解除済み");
     }
-    for unit in [
-        "bds-daily.service",
-        "bds-update.service",
-        "bds-discord-restart.service",
-        "bds-discord-reboot.service",
-    ] {
-        let v = util::prop(unit, "ActiveState")?;
+    let jobs = [
+        "bds-daily.service".to_string(),
+        "bds-update.service".to_string(),
+    ]
+    .into_iter()
+    .chain(
+        crate::discord::Action::ALL
+            .iter()
+            .map(|action| action.unit()),
+    );
+    for unit in jobs {
+        let v = util::prop(&unit, "ActiveState")?;
         if !matches!(v.as_str(), "inactive" | "") {
             println!("実行中: {unit} ({v})");
         }
@@ -158,9 +166,8 @@ pub fn status(c: &Config) -> Result<()> {
             fs::read_to_string(deployment)?
         );
     }
-    let tx = c.state().join("transaction.json");
-    if tx.exists() {
-        let t: operations::Transaction = util::read_json(&tx)?;
+    if operations::TRANSACTION.exists(c) {
+        let t = operations::TRANSACTION.load(c)?;
         println!(
             "操作記録: {} / {} / {}（中断時はrecover）",
             t.id, t.kind, t.phase
@@ -171,20 +178,19 @@ pub fn status(c: &Config) -> Result<()> {
     } else {
         println!("バックアップ: 未作成");
     }
-    let success = c.state().join("maintenance-success.json");
+    let success = operations::SUCCESS.path(c);
     if success.exists() {
         println!(
             "最後のバックアップ・復帰成功: {}",
             fs::read_to_string(success)?
         );
     }
-    for (label, filename) in [
-        ("取得済み更新", "pending-release.json"),
-        ("自動再試行しない版", "rejected-release.json"),
+    for (label, record) in [
+        ("取得済み更新", operations::PENDING_RELEASE),
+        ("自動再試行しない版", operations::REJECTED_RELEASE),
     ] {
-        let p = c.state().join(filename);
-        if p.exists() {
-            let r: releases::Release = util::read_json(&p)?;
+        if record.exists(c) {
+            let r = record.load(c)?;
             println!("{label}: {}", r.id);
         }
     }
@@ -230,12 +236,7 @@ pub fn deployment_check(c: &Config) -> Result<()> {
         c.paths.store == std::path::Path::new("/var/lib/bds") && c.server.unit == "bds.service",
         "自動配布は標準の保存先・サービス名専用です"
     );
-    ensure!(
-        !c.state().join("transaction.json").exists()
-            && !c.state().join("import.json").exists()
-            && !c.state().join("reboot-pending.json").exists(),
-        "中断記録があります"
-    );
+    operations::ensure_no_interruption(c)?;
     releases::current(c)?;
     Ok(())
 }

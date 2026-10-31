@@ -1,32 +1,77 @@
 //! Discord HTTP interactions. No gateway connection or stored Bot Token.
+use crate::state::Record;
 use crate::{config::Config, operations, util};
 use anyhow::{Context, Result, ensure};
 use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{fs, io::Read};
+const CONFIRM_SECONDS: u64 = 60;
+const DISPATCH_SECONDS: u64 = 120;
+crate::model::text_enum! {
+    pub enum Action {
+        Restart => "restart",
+        Reboot => "reboot",
+    }
+}
+impl Action {
+    pub fn unit(self) -> String {
+        format!("bds-discord-{self}.service")
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Restart => "Minecraftを再起動",
+            Self::Reboot => "OSを再起動",
+        }
+    }
+    fn description(self) -> &'static str {
+        match self {
+            Self::Restart => "Minecraftサーバーを再起動します",
+            Self::Reboot => "OSを再起動します",
+        }
+    }
+    fn execute(self, c: &Config) -> Result<()> {
+        match self {
+            Self::Restart => operations::restart(c),
+            Self::Reboot => operations::reboot(c),
+        }
+    }
+}
+crate::model::text_enum! {
+    pub enum JobPhase {
+        Confirm => "confirm",
+        Dispatched => "dispatched",
+        Cancelled => "cancelled",
+    }
+}
+crate::model::text_enum! {
+    pub enum OutcomePhase {
+        Running => "running",
+        Done => "done",
+        Failed => "failed",
+        RebootRequested => "reboot-requested",
+    }
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
     pub user: String,
-    pub kind: String,
-    pub phase: String,
+    pub kind: Action,
+    pub phase: JobPhase,
     pub created: u64,
     pub boot: String,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Outcome {
     pub id: String,
-    pub phase: String,
+    pub phase: OutcomePhase,
     pub boot: String,
     pub message: String,
 }
 fn job_path(c: &Config) -> std::path::PathBuf {
     c.paths.discord_state.join("job.json")
 }
-fn outcome_path(c: &Config) -> std::path::PathBuf {
-    c.state().join("discord-outcome.json")
-}
+const OUTCOME: Record<Outcome> = Record::new("discord-outcome.json", 0o644);
 fn save(c: &Config, j: &Job) -> Result<()> {
     util::json(&job_path(c), j, 0o600)
 }
@@ -72,24 +117,31 @@ pub fn signed(key: &str, timestamp: &str, signature: &str, body: &[u8], now: u64
     content.extend_from_slice(body);
     key.verify_strict(&content, &sig).is_ok()
 }
-fn pending(c: &Config) -> Option<Job> {
-    util::read_json(&job_path(c)).ok()
+fn pending(c: &Config) -> Result<Option<Job>> {
+    match fs::read(job_path(c)) {
+        Ok(bytes) => Ok(Some(
+            serde_json::from_slice(&bytes)
+                .context("Discord操作の記録が不正です。管理者が確認してください")?,
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
+    }
 }
 fn busy(c: &Config, j: &Job) -> bool {
-    if j.phase == "confirm" {
-        return util::now().saturating_sub(j.created) < 60;
+    if j.phase == JobPhase::Confirm {
+        return util::now().saturating_sub(j.created) < CONFIRM_SECONDS;
     }
-    if j.phase != "dispatched" {
+    if j.phase != JobPhase::Dispatched {
         return false;
     }
-    if let Ok(o) = util::read_json::<Outcome>(&outcome_path(c))
+    if let Ok(o) = OUTCOME.load(c)
         && o.id == j.id
-        && matches!(o.phase.as_str(), "done" | "failed")
+        && matches!(o.phase, OutcomePhase::Done | OutcomePhase::Failed)
     {
         return false;
     }
     // A reboot that changed the boot ID is complete. Never submit an uncertain job again.
-    if j.kind == "reboot" && j.boot != util::boot() {
+    if j.kind == Action::Reboot && j.boot != util::boot() {
         return false;
     }
     true
@@ -111,11 +163,10 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
         .as_str()
         .context("ユーザーIDがありません")?;
     if v["type"] == 2 {
-        let kind = v["data"]["name"].as_str().unwrap_or("");
-        if !matches!(kind, "restart" | "reboot") {
+        let Ok(kind) = v["data"]["name"].as_str().unwrap_or("").parse::<Action>() else {
             return Ok((message("未対応の操作です。"), None));
-        }
-        if let Some(j) = pending(c) {
+        };
+        if let Some(j) = pending(c)? {
             if busy(c, &j) {
                 return Ok((
                     message(
@@ -124,7 +175,7 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
                     None,
                 ));
             }
-            if j.phase == "dispatched"
+            if j.phase == JobPhase::Dispatched
                 && util::now().saturating_sub(j.created) < c.discord.cooldown_seconds
             {
                 return Ok((
@@ -136,22 +187,18 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
         let j = Job {
             id: util::nonce()?,
             user: user.into(),
-            kind: kind.into(),
-            phase: "confirm".into(),
+            kind,
+            phase: JobPhase::Confirm,
             created: util::now(),
             boot: util::boot(),
         };
         save(c, &j)?;
-        let label = if kind == "restart" {
-            "Minecraftを再起動"
-        } else {
-            "OSを再起動"
-        };
-        let data = json!({"content":format!("{label}しますか？ 確認は60秒間有効です。"),"flags":64,"allowed_mentions":{"parse":[]},"components":[{"type":1,"components":[{"type":2,"style":4,"label":"実行","custom_id":format!("bds:{}:yes",j.id)},{"type":2,"style":2,"label":"キャンセル","custom_id":format!("bds:{}:no",j.id)}]}]});
+        let label = kind.label();
+        let data = json!({"content":format!("{label}しますか？ 確認は{CONFIRM_SECONDS}秒間有効です。"),"flags":64,"allowed_mentions":{"parse":[]},"components":[{"type":1,"components":[{"type":2,"style":4,"label":"実行","custom_id":format!("bds:{}:yes",j.id)},{"type":2,"style":2,"label":"キャンセル","custom_id":format!("bds:{}:no",j.id)}]}]});
         return Ok((json!({"type":4,"data":data}), None));
     }
     if v["type"] == 3 {
-        let Some(mut j) = pending(c) else {
+        let Some(mut j) = pending(c)? else {
             return Ok((message("確認が見つかりません。"), None));
         };
         let custom = v["data"]["custom_id"].as_str().unwrap_or("");
@@ -160,8 +207,8 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
             || parts[0] != "bds"
             || parts[1] != j.id
             || j.user != user
-            || j.phase != "confirm"
-            || util::now().saturating_sub(j.created) >= 60
+            || j.phase != JobPhase::Confirm
+            || util::now().saturating_sub(j.created) >= CONFIRM_SECONDS
             || j.boot != util::boot()
         {
             return Ok((
@@ -173,14 +220,13 @@ pub fn handle(c: &Config, v: &Value) -> Result<(Value, Option<Job>)> {
             return Ok((message("確認内容が不正です。"), None));
         }
         j.phase = if parts[2] == "yes" {
-            "dispatched"
+            JobPhase::Dispatched
         } else {
-            "cancelled"
-        }
-        .into();
+            JobPhase::Cancelled
+        };
         j.created = util::now();
         save(c, &j)?;
-        let launch = (j.phase == "dispatched").then_some(j);
+        let launch = (j.phase == JobPhase::Dispatched).then_some(j);
         return Ok((
             json!({"type":7,"data":{"content":if launch.is_some(){"操作を受け付けました。ゲーム内で予告してから実行します。結果は通知チャンネルを確認してください。"}else{"キャンセルしました。"},"components":[],"allowed_mentions":{"parse":[]}}}),
             launch,
@@ -256,7 +302,7 @@ fn receive(
     // Dispatch an accepted operation even if its acknowledgement cannot be delivered.
     let _ = crate::http::respond(stream, 200, response.to_string().as_bytes());
     if let Some(j) = launch {
-        let unit = format!("bds-discord-{}.service", j.kind);
+        let unit = j.kind.unit();
         if util::systemctl(&["--no-block", "start", &unit]).is_err() {
             let _ = util::webhook(
                 &c.paths.webhook_file,
@@ -272,46 +318,41 @@ fn supervisor_notify() -> Result<()> {
 }
 pub fn execute(c: &Config, kind: &str) -> Result<()> {
     util::root()?;
-    ensure!(matches!(kind, "restart" | "reboot"), "操作が不正です");
+    let kind: Action = kind.parse()?;
     let _lock = util::Lock::acquire(&c.state().join("discord-job.lock"), 0)?;
     let j: Job = util::read_json(&job_path(c))?;
     ensure!(
-        j.phase == "dispatched"
+        j.phase == JobPhase::Dispatched
             && j.kind == kind
             && j.boot == util::boot()
-            && util::now().saturating_sub(j.created) <= 120,
+            && util::now().saturating_sub(j.created) <= DISPATCH_SECONDS,
         "実行待ちの操作がありません"
     );
-    let previous = outcome_path(c);
-    if previous.exists() {
-        let o: Outcome =
-            util::read_json(&previous).context("操作結果の記録が不正です。再実行しません")?;
+    if OUTCOME.exists(c) {
+        let o: Outcome = OUTCOME
+            .load(c)
+            .context("操作結果の記録が不正です。再実行しません")?;
         ensure!(o.id != j.id, "この操作は既に受け付けています");
     }
     let mut o = Outcome {
         id: j.id,
-        phase: "running".into(),
+        phase: OutcomePhase::Running,
         boot: util::boot(),
         message: String::new(),
     };
-    util::json(&outcome_path(c), &o, 0o644)?;
-    let result = if kind == "restart" {
-        operations::restart(c)
-    } else {
-        operations::reboot(c)
-    };
+    OUTCOME.save(c, &o)?;
+    let result = kind.execute(c);
     o.phase = if result.is_ok() {
-        if kind == "reboot" {
-            "reboot-requested"
+        if kind == Action::Reboot {
+            OutcomePhase::RebootRequested
         } else {
-            "done"
+            OutcomePhase::Done
         }
     } else {
-        "failed"
-    }
-    .into();
+        OutcomePhase::Failed
+    };
     o.message = if result.is_ok() {
-        if kind == "reboot" {
+        if kind == Action::Reboot {
             "OS再起動を要求しました。"
         } else {
             "Minecraftの再起動が完了しました。"
@@ -320,7 +361,7 @@ pub fn execute(c: &Config, kind: &str) -> Result<()> {
         "操作に失敗しました。サーバーの状態を確認してください。"
     }
     .into();
-    util::json(&outcome_path(c), &o, 0o644)?;
+    OUTCOME.save(c, &o)?;
     let _ = util::webhook(&c.paths.webhook_file, &o.message);
     result
 }
@@ -337,7 +378,16 @@ pub fn register(c: &Config) -> Result<()> {
         "https://discord.com/api/v10/applications/{}/guilds/{}/commands",
         c.discord.application_id, c.discord.guild_id
     );
-    let commands = json!([{"name":"restart","description":"Minecraftサーバーを再起動します","type":1,"default_member_permissions":null,"dm_permission":false},{"name":"reboot","description":"OSを再起動します","type":1,"default_member_permissions":null,"dm_permission":false}]);
+    let commands: Vec<_> = Action::ALL
+        .iter()
+        .copied()
+        .map(|action| {
+            json!({
+                "name": action.as_str(), "description": action.description(),
+                "type": 1, "default_member_permissions": null, "dm_permission": false,
+            })
+        })
+        .collect();
     ensure!(
         util::https_agent(15)
             .put(&url)

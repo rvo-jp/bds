@@ -150,7 +150,7 @@ fn confirmation_owner_expiry_cancel_and_replay() {
     assert!(discord::handle(&f.c, &confirm).unwrap().1.is_none());
     confirm["member"]["user"]["id"] = json!("4");
     let (_, launch) = discord::handle(&f.c, &confirm).unwrap();
-    assert_eq!(launch.unwrap().kind, "restart");
+    assert_eq!(launch.unwrap().kind, discord::Action::Restart);
     assert!(discord::handle(&f.c, &confirm).unwrap().1.is_none());
     assert!(discord::handle(&f.c, &base).unwrap().0["data"]["components"].is_null());
 }
@@ -163,8 +163,8 @@ fn unknown_dispatched_job_survives_restart_without_redispatch() {
     let j = discord::Job {
         id: "nonce".into(),
         user: "4".into(),
-        kind: "restart".into(),
-        phase: "dispatched".into(),
+        kind: discord::Action::Restart,
+        phase: discord::JobPhase::Dispatched,
         created: 0,
         boot: util::boot(),
     };
@@ -334,11 +334,11 @@ fn daily_retention_is_not_consumed_by_update_or_manual_backups() {
     f.c.maintenance.extra_retention = 1;
     fs::create_dir_all(f.c.data()).unwrap();
     fs::write(f.c.data().join("world"), "data").unwrap();
-    let oldest = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
-    let daily = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
-    let newest = snapshots::capture_reason(&f.c, "1.2.3.4", "daily").unwrap();
-    let old_extra = snapshots::capture_reason(&f.c, "1.2.3.4", "update").unwrap();
-    let extra = snapshots::capture_reason(&f.c, "1.2.3.4", "manual").unwrap();
+    let oldest = snapshots::capture_reason(&f.c, "1.2.3.4", snapshots::Reason::Daily).unwrap();
+    let daily = snapshots::capture_reason(&f.c, "1.2.3.4", snapshots::Reason::Daily).unwrap();
+    let newest = snapshots::capture_reason(&f.c, "1.2.3.4", snapshots::Reason::Daily).unwrap();
+    let old_extra = snapshots::capture_reason(&f.c, "1.2.3.4", snapshots::Reason::Update).unwrap();
+    let extra = snapshots::capture_reason(&f.c, "1.2.3.4", snapshots::Reason::Manual).unwrap();
     snapshots::protect(&f.c, &old_extra.id, true).unwrap();
     snapshots::prune(&f.c).unwrap();
     assert!(snapshots::load(&f.c, &oldest.id).is_err());
@@ -385,7 +385,10 @@ fn old_snapshot_metadata_remains_readable_as_manual() {
     let mut value: serde_json::Value = util::read_json(&p).unwrap();
     value.as_object_mut().unwrap().remove("reason");
     util::json(&p, &value, 0o644).unwrap();
-    assert_eq!(snapshots::load(&f.c, &s.id).unwrap().reason, "manual");
+    assert_eq!(
+        snapshots::load(&f.c, &s.id).unwrap().reason,
+        snapshots::Reason::Manual
+    );
     assert!(bdsctl::admin::snapshot_line(&s).contains("JST"));
 }
 
@@ -461,4 +464,62 @@ fn legacy_vendor_comparison_rejects_deleted_added_and_changed_files() {
     assert!(releases::verify_vendor_pack(&legacy, &original).is_err());
     fs::remove_dir_all(legacy).unwrap();
     assert!(releases::verify_vendor_pack(&f.root.join("legacy-pack"), &original).is_err());
+}
+
+#[test]
+fn operation_records_keep_the_existing_wire_format_and_reject_unknown_states() {
+    use bdsctl::operations::{Transaction, TransactionKind, TransactionPhase};
+    let record = json!({
+        "id":"20261031-000000", "kind":"maintenance", "phase":"applying",
+        "old_release":"1.2.3.4", "snapshot":"20261030-000000", "was_active":true,
+        "owner":123, "owner_start":"456", "boot":"previous-boot"
+    });
+    let transaction: Transaction = serde_json::from_value(record.clone()).unwrap();
+    assert_eq!(transaction.kind, TransactionKind::Maintenance);
+    assert_eq!(transaction.phase, TransactionPhase::Applying);
+    assert_eq!(serde_json::to_value(transaction).unwrap(), record);
+    for (field, unknown) in [("phase", "aplying"), ("kind", "remove")] {
+        let mut invalid = record.clone();
+        invalid[field] = json!(unknown);
+        assert!(serde_json::from_value::<Transaction>(invalid).is_err());
+    }
+}
+
+#[test]
+fn corrupt_discord_job_is_not_overwritten_by_a_new_request() {
+    let mut f = Fixture::new();
+    f.c.discord.application_id = "1".into();
+    f.c.discord.guild_id = "2".into();
+    f.c.discord.allowed_users = vec!["4".into()];
+    let request = json!({"application_id":"1","guild_id":"2","member":{"user":{"id":"4"}},"type":2,"data":{"name":"restart"}});
+    let path = f.c.paths.discord_state.join("job.json");
+    for bytes in [
+        "broken JSON".to_string(),
+        json!({"id":"old-request","user":"4","kind":"restart","phase":"unknown","created":0,"boot":util::boot()}).to_string(),
+    ] {
+        fs::write(&path, &bytes).unwrap();
+        assert!(discord::handle(&f.c, &request).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), bytes);
+    }
+}
+
+#[test]
+fn config_defaults_are_generated_without_a_config_file_and_examples_only_override_discord() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_bdsctl"))
+        .arg("--default-config")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let defaults: Config = toml::from_str(std::str::from_utf8(&output.stdout).unwrap()).unwrap();
+    defaults.validate().unwrap();
+    let expected = serde_json::to_value(Config::default()).unwrap();
+    assert_eq!(serde_json::to_value(defaults).unwrap(), expected);
+    let example: Config = toml::from_str(include_str!("../bds.toml.example")).unwrap();
+    example.validate().unwrap();
+    let example = serde_json::to_value(example).unwrap();
+    for section in ["paths", "server", "maintenance"] {
+        assert_eq!(example[section], expected[section]);
+    }
+    assert_eq!(example["discord"]["enabled"], true);
 }

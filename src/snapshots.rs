@@ -25,12 +25,19 @@ pub struct Snapshot {
     pub release: String,
     pub created: u64,
     pub protected: bool,
-    #[serde(default = "manual_reason")]
-    pub reason: String,
+    #[serde(default)]
+    pub reason: Reason,
     pub files: BTreeMap<String, FileRecord>,
 }
-fn manual_reason() -> String {
-    "manual".into()
+crate::model::text_enum! {
+    #[derive(Default)]
+    pub enum Reason {
+        Daily => "daily",
+        #[default]
+        Manual => "manual",
+        Update => "update",
+        Safety => "safety",
+    }
 }
 pub fn list(c: &Config) -> Result<Vec<Snapshot>> {
     let mut out = vec![];
@@ -73,13 +80,9 @@ pub fn safe_relative(path: &Path) -> Result<()> {
     Ok(())
 }
 pub fn capture(c: &Config, release: &str) -> Result<Snapshot> {
-    capture_reason(c, release, "manual")
+    capture_reason(c, release, Reason::Manual)
 }
-pub fn capture_reason(c: &Config, release: &str, reason: &str) -> Result<Snapshot> {
-    ensure!(
-        ["daily", "manual", "update", "safety"].contains(&reason),
-        "保存理由が不正です"
-    );
+pub fn capture_reason(c: &Config, release: &str, reason: Reason) -> Result<Snapshot> {
     identifier(release)?;
     fs::create_dir_all(c.snapshots())?;
     let paths = util::files(&c.data())?;
@@ -151,7 +154,7 @@ pub fn capture_reason(c: &Config, release: &str, reason: &str) -> Result<Snapsho
             release: release.into(),
             created: util::now(),
             protected: false,
-            reason: reason.into(),
+            reason,
             files,
         };
         util::json(&partial.join("snapshot.json"), &snapshot, 0o644)?;
@@ -205,7 +208,7 @@ pub fn prune(c: &Config) -> Result<()> {
     ] {
         let eligible: Vec<_> = all
             .iter()
-            .filter(|s| !s.protected && (s.reason == "daily") == daily)
+            .filter(|s| !s.protected && (s.reason == Reason::Daily) == daily)
             .collect();
         let n = eligible.len().saturating_sub(limit);
         for s in eligible.into_iter().take(n) {
