@@ -119,12 +119,29 @@ pub(crate) fn respond(stream: &mut TcpStream, code: u16, body: &[u8]) -> std::io
         503 => "Service Unavailable",
         _ => "Internal Server Error",
     };
-    write!(
-        stream,
+    let header = format!(
         "HTTP/1.1 {code} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
-    )?;
-    stream.write_all(body)
+    );
+    let mut response = header.into_bytes();
+    response.extend_from_slice(body);
+    stream.write_all(&response)?;
+    stream.shutdown(std::net::Shutdown::Write)
+}
+pub(crate) fn reject(stream: &mut TcpStream, code: u16) {
+    let _ = respond(stream, code, b"");
+    // Closing with unread request bytes can reset TCP and discard the response.
+    // After sending FIN, drain only a bounded amount and never wait indefinitely.
+    let deadline = Instant::now() + Duration::from_millis(100);
+    let mut remaining = 8192 + 65536;
+    while remaining > 0 {
+        let mut buffer = [0u8; 8192];
+        let limit = buffer.len().min(remaining);
+        match read_more(stream, &mut buffer[..limit], deadline) {
+            Ok(n) => remaining -= n,
+            Err(_) => break,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -187,6 +204,24 @@ mod tests {
             read(&mut server, Instant::now() + Duration::from_millis(200)).err(),
             Some(401)
         );
+    }
+    #[test]
+    fn rejection_delivers_complete_response_before_bounded_close() {
+        let (mut client, mut server) = pair();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        client
+            .write_all((wire("Content-Length: 65536\r\n") + "{").as_bytes())
+            .unwrap();
+        let started = Instant::now();
+        let worker = thread::spawn(move || reject(&mut server, 503));
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        worker.join().unwrap();
+        assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+        assert!(response.ends_with("\r\n\r\n"));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn partial_headers_and_body_have_absolute_deadlines() {

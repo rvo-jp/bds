@@ -195,7 +195,7 @@ pub fn serve(c: &Config) -> Result<()> {
         let Ok(mut stream) = stream else { continue };
         use std::sync::atomic::Ordering;
         if connections.load(Ordering::Acquire) >= 4 {
-            let _ = crate::http::respond(&mut stream, 503, b"");
+            crate::http::reject(&mut stream, 503);
             continue;
         }
         connections.fetch_add(1, Ordering::AcqRel);
@@ -209,7 +209,7 @@ pub fn serve(c: &Config) -> Result<()> {
             .spawn(move || {
                 let _permit = permit;
                 if let Err(code) = receive(&config, &jobs, &mut stream, accepted) {
-                    let _ = crate::http::respond(&mut stream, code, b"");
+                    crate::http::reject(&mut stream, code);
                 }
             })
             .is_err()
