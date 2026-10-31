@@ -523,3 +523,61 @@ fn config_defaults_are_generated_without_a_config_file_and_examples_only_overrid
     }
     assert_eq!(example["discord"]["enabled"], true);
 }
+
+#[test]
+fn legacy_preflight_accepts_only_exact_historical_files_without_touching_source() {
+    use bdsctl::operations;
+    let f = Fixture::new();
+    let legacy = f.root.join("legacy");
+    let current = f.c.paths.releases.join("1.2.3.4");
+    let previous = f.c.paths.releases.join("1.2.3.3");
+    for (root, id) in [(&current, "1.2.3.4"), (&previous, "1.2.3.3")] {
+        fs::create_dir_all(root.join("behavior_packs/vanilla")).unwrap();
+        util::json(
+            &root.join("release.json"),
+            &json!({"id":id,"url":"fixture","sha256":id}),
+            0o644,
+        )
+        .unwrap();
+        fs::write(root.join("bedrock_server"), "fixture").unwrap();
+    }
+    fs::write(
+        current.join("behavior_packs/vanilla/kept.json"),
+        "current bytes",
+    )
+    .unwrap();
+    fs::write(
+        previous.join("behavior_packs/vanilla/old.json"),
+        "historical bytes",
+    )
+    .unwrap();
+    fs::create_dir(&legacy).unwrap();
+    util::copy_tree(
+        &current.join("behavior_packs"),
+        &legacy.join("behavior_packs"),
+    )
+    .unwrap();
+    fs::write(legacy.join(".installed-version"), "1.2.3.4").unwrap();
+    let old = legacy.join("behavior_packs/vanilla/old.json");
+    fs::write(&old, "historical bytes").unwrap();
+    operations::prepare_legacy(&f.c, &legacy, "1.2.3.3").unwrap();
+    let plan = f.c.state().join("legacy-plan.json");
+    let record: serde_json::Value = util::read_json(&plan).unwrap();
+    assert_eq!(record["extras"].as_object().unwrap().len(), 1);
+    assert_eq!(fs::read(&old).unwrap(), b"historical bytes");
+    assert!(!f.c.data().exists() && !f.c.current().exists());
+    // Neither unknown additions nor changes to current official files can be approved.
+    fs::write(&old, "custom bytes").unwrap();
+    assert!(operations::prepare_legacy(&f.c, &legacy, "1.2.3.3").is_err());
+    assert!(!plan.exists());
+    fs::write(&old, "historical bytes").unwrap();
+    fs::write(
+        legacy.join("behavior_packs/vanilla/kept.json"),
+        "custom current",
+    )
+    .unwrap();
+    assert!(operations::prepare_legacy(&f.c, &legacy, "1.2.3.3").is_err());
+    fs::remove_file(legacy.join("behavior_packs/vanilla/kept.json")).unwrap();
+    assert!(operations::prepare_legacy(&f.c, &legacy, "1.2.3.3").is_err());
+    assert!(!plan.exists() && !f.c.data().exists());
+}

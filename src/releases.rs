@@ -8,7 +8,7 @@ use std::{
     fs,
     io::Read,
     os::unix::fs::{PermissionsExt, symlink},
-    path::Path,
+    path::{Path, PathBuf},
 };
 pub const MUTABLE: &[&str] = &[
     "worlds",
@@ -327,15 +327,37 @@ pub fn prune(c: &Config, protected: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Reject additions, removals and content edits before publishing a legacy import.
+/// Strict comparison is the default; only a separately verified legacy plan may allow extras.
 pub fn verify_vendor_pack(legacy: &Path, vendor: &Path) -> Result<()> {
-    let message = "公式パックの直接編集（追加・削除を含む）を検出しました。独自パックへ分離してから移行してください";
+    verify_vendor_pack_with_extras(legacy, vendor, &std::collections::BTreeMap::new())
+}
+
+pub(crate) fn verify_vendor_pack_with_extras(
+    legacy: &Path,
+    vendor: &Path,
+    extras: &std::collections::BTreeMap<PathBuf, String>,
+) -> Result<()> {
+    let message = "公式パックの差分を確認できません。停止前にprepare-legacyで検証し、独自変更は別パックへ分離してください";
     let actual = util::files(legacy).context(message)?;
     let expected = util::files(vendor)?;
-    ensure!(actual == expected, "{message}: {}", legacy.display());
-    for rel in actual {
+    let mut permitted = expected.clone();
+    for rel in extras.keys() {
+        crate::snapshots::safe_relative(rel)?;
         ensure!(
-            util::hash(&legacy.join(&rel))? == util::hash(&vendor.join(&rel))?,
+            !expected.contains(rel),
+            "現行の公式ファイルは除外できません"
+        );
+        permitted.push(rel.clone());
+    }
+    permitted.sort();
+    ensure!(actual == permitted, "{message}: {}", legacy.display());
+    for rel in actual {
+        let digest = match extras.get(&rel) {
+            Some(digest) => digest.clone(),
+            None => util::hash(&vendor.join(&rel))?,
+        };
+        ensure!(
+            util::hash(&legacy.join(&rel))? == digest,
             "{message}: {}",
             legacy.join(&rel).display()
         );

@@ -337,7 +337,7 @@ allowed_users = ["642606556151545857"]
         imported=root/'imported';old=root/'old';(old/'worlds').mkdir(parents=True)
         (old/'worlds/data').write_text('import-world');(old/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n');(old/'.installed-version').write_text('1.2.3.4')
         cached=imported/'releases/1.2.3.4';cached.mkdir(parents=True);shutil.copy2(fake,cached/'bedrock_server')
-        (cached/'release.json').write_text(json.dumps({'id':'1.2.3.4','url':'fixture','sha256':'fixture'}));(cached/'world_templates').write_text('damaged cached release')
+        (cached/'release.json').write_text(json.dumps({'id':'1.2.3.4','url':'fixture','sha256':'fixture'}))
         import_config=root/'import-config.toml';text=(root/'config.toml').read_text()
         for name in ['store','releases','runtime','diagnostics','discord']:text=text.replace(f'{root}/{name}"',f'{imported}/{name}"')
         import_config.write_text(text)
@@ -353,12 +353,43 @@ allowed_users = ["642606556151545857"]
         assert not (imported/'store/data').exists() and not (imported/'store/state/import.json').exists()
         shutil.copytree(cached/'behavior_packs/vanilla',old/'behavior_packs/vanilla')
         check('legacy import refuses removed vendor files and entire packs before publishing any data')
+        reference=imported/'releases/1.2.3.3';(reference/'behavior_packs/vanilla').mkdir(parents=True)
+        (reference/'release.json').write_text(json.dumps({'id':'1.2.3.3','url':'fixture','sha256':'previous'}))
+        (reference/'behavior_packs/vanilla/obsolete.json').write_text('old official bytes')
+        obsolete=old/'behavior_packs/vanilla/obsolete.json';obsolete.write_text('old official bytes')
+        custom=old/'behavior_packs/custom';custom.mkdir();(custom/'manifest.json').write_text('custom addon remains')
+        # Preparation neither requires a stopped unit nor modifies the source/world.
+        run('systemctl','start',unit);invocation=status()['invocation']
+        importing('prepare-legacy',old,'1.2.3.3')
+        plan=imported/'store/state/legacy-plan.json'
+        assert len(json.loads(plan.read_text())['extras'])==1 and status()['invocation']==invocation
+        assert not (imported/'store/data').exists() and obsolete.read_text()=='old official bytes'
+        run('systemctl','stop',unit)
+        check('legacy preparation verifies historical leftovers while Minecraft stays running')
+        # A changed/removed planned extra or an unplanned addition still blocks publication.
+        for action in ['changed','missing','added','current-changed','current-missing']:
+            if action=='changed':obsolete.write_text('unknown changed content')
+            elif action=='missing':obsolete.unlink()
+            elif action=='added':(obsolete.parent/'unapproved.json').write_text('unknown')
+            elif action=='current-changed':(obsolete.parent/'kept.json').write_text('modified')
+            else:(obsolete.parent/'kept.json').unlink()
+            assert importing('import-legacy',old,ok=False).returncode
+            assert not (imported/'store/data').exists() and not (imported/'releases/current').exists()
+            obsolete.write_text('old official bytes');(obsolete.parent/'kept.json').write_text('vendor')
+            (obsolete.parent/'unapproved.json').unlink(missing_ok=True)
+        check('legacy import rechecks planned leftovers and rejects subsequent source changes')
+        # Fail ownership after publication to exercise durable finalization separately.
+        import_config.write_text(text.replace(f'user = "{user}"',f'user = "bds-missing-{token}"'))
         result=importing('import-legacy',old,ok=False);assert result.returncode and (imported/'store/state/import.json').exists()
         assert (imported/'store/data/worlds/data').read_text()=='import-world'
         assert importing('restart',ok=False).returncode
-        (cached/'world_templates').unlink();importing('import-legacy',old)
+        import_config.write_text(text);importing('import-legacy',old)
         assert not (imported/'store/state/import.json').exists();assert os.readlink(imported/'releases/current')=='1.2.3.4'
-        assert (old/'worlds/data').read_text()=='import-world';check('failed initial import retries safely without deleting destination or changing source')
+        assert (old/'worlds/data').read_text()=='import-world' and obsolete.read_text()=='old official bytes'
+        assert not (imported/'store/data/behavior_packs/vanilla').exists() and not plan.exists()
+        assert (imported/'store/data/behavior_packs/custom/manifest.json').read_text()=='custom addon remains'
+        check('historical leftovers are excluded, custom addons preserved and the source remains unchanged')
+        check('failed initial import retries safely without deleting destination or changing source')
         # Simulate power loss just before data publication, then after activation.
         stage=imported/'store/.import-interrupted';(imported/'store/data').rename(stage);(imported/'releases/current').unlink()
         marker=imported/'store/state/import.json';record={'release':'1.2.3.4','stage':stage.name};marker.write_text(json.dumps(record))

@@ -13,7 +13,7 @@ fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "bdsctl [--config /etc/bds/config.toml] COMMAND\n--default-config（既定設定を表示）\n\nstatus | status-json | inventory | maintenance-begin | maintenance-end | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | import-legacy PATH | import-package FILE | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
+            "bdsctl [--config /etc/bds/config.toml] COMMAND\n--default-config（既定設定を表示）\n\nstatus | status-json | inventory | maintenance-begin | maintenance-end | console TEXT | backup | daily | restart | reboot | update | check-update | auto-update\nsnapshots | verify ID | protect ID | unprotect ID | restore ID | export ID FILE\ninit | prepare-legacy PATH REFERENCE_VERSION | import-legacy PATH | import-package FILE | recover | supervise | discord | register-commands\nprepare-directories | generate-units DIR [BINARY]\n\n破壊を伴う操作・インストール操作はroot専用です。コマンドを省略すると何も変更しません。"
         );
         return Ok(());
     }
@@ -47,7 +47,7 @@ fn run() -> Result<()> {
         "generate-units" => None,
         "verify" | "protect" | "unprotect" | "restore" | "import-legacy" | "discord-job"
         | "notify-failure" => Some(1),
-        "export" => Some(2),
+        "export" | "prepare-legacy" => Some(2),
         "import-package" => Some(1),
         _ => Some(0),
     };
@@ -137,6 +137,9 @@ fn run() -> Result<()> {
                 "import-package" => recovery::import(&c, Path::new(value(0)?))?,
                 "recover" => operations::recover(&c)?,
                 "init" => operations::init(&c)?,
+                "prepare-legacy" => {
+                    operations::prepare_legacy(&c, Path::new(value(0)?), value(1)?)?
+                }
                 "import-legacy" => operations::import_legacy(&c, Path::new(value(0)?))?,
                 "backup" => {
                     operations::maintenance(&c, operations::MaintenanceRequest::Backup)?;

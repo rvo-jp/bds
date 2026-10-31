@@ -55,6 +55,7 @@ pub(crate) fn finish_placement(c: &Config) -> Result<()> {
     releases::prepare(c, &tx.release)?;
     chown_data(c)?;
     releases::activate(c, &tx.release)?;
+    super::legacy::PLAN.remove(c)?;
     PLACEMENT.remove(c)?;
     Ok(())
 }
@@ -142,11 +143,8 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
         }
         temporary.join("server")
     };
-    let version = fs::read_to_string(directory.join(".installed-version"))?
-        .trim()
-        .to_string();
-    let url = releases::download_url(&version);
-    releases::download(c, &version, &url)?;
+    let version = super::legacy::installed_version(&directory)?;
+    super::legacy::verify_source(c, &directory, &version)?;
     let stage = c.paths.store.join(format!(".import-{}", util::nonce()?));
     fs::create_dir(&stage)?;
     let cleanup = util::CleanupDir(stage.clone());
@@ -165,14 +163,6 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
     for key in releases::PACKS {
         fs::create_dir_all(stage.join(key))?;
         let from = directory.join(key);
-        let vendor_root = c.paths.releases.join(&version).join(key);
-        if vendor_root.is_dir() {
-            // Check every vendor pack, including packs removed in the legacy tree.
-            for vendor in fs::read_dir(&vendor_root)? {
-                let vendor = vendor?;
-                releases::verify_vendor_pack(&from.join(vendor.file_name()), &vendor.path())?;
-            }
-        }
         if !from.exists() {
             continue;
         }

@@ -1,4 +1,5 @@
 //! Administration entry points. Each workflow has one implementation.
+mod legacy;
 mod lifecycle;
 mod maintenance;
 mod placement;
@@ -7,6 +8,7 @@ mod restore;
 mod state;
 
 pub use crate::state::lock;
+pub use legacy::prepare_legacy;
 pub use lifecycle::{
     active, ensure_clean_backup_source, ensure_stopped, maintenance_notice, reboot, restart, start,
     stop,
