@@ -10,7 +10,7 @@ LinuxのMinecraft Bedrock Dedicated Serverを管理するRust製の単一実行�
 | `/usr/local/bin/bdsctl` | 検証済みのLinux用バイナリ。root所有 |
 | `/etc/bds/config.toml` | 公開可能な設定。root所有・644 |
 | `/etc/bds/webhook` | Discord Webhook URLのみ。root:bds-notify・640 |
-| `/opt/bds/releases` | 公式BDSの版別ディレクトリと`current`リンク。root所有 |
+| `/opt/bedrock/releases` | 公式BDSの版別ディレクトリと`current`リンク。root所有 |
 | `/var/lib/bds/data` | ワールド・設定・独自パック。bds所有 |
 | `/var/lib/bds/backups` | 停止中に作成した差分スナップショット。root専用 |
 | `/var/lib/bds/state` | 操作の中断記録・更新候補・Discord操作結果。root所有 |
@@ -76,21 +76,23 @@ unset BDS_REGISTER_TOKEN
 
 入退室通知は`Steve がログインしました。`・`Steve がログアウトしました。`です。通知は上限付きの別キューで送り、Discordの遅延でBDSの監督を止めません。通知先の障害やキュー超過では通知を失うことがあります。
 
-## ビルド・設置
+## 開発・配布・設置
 
-Rust 1.96以上。実行先はx86_64 Linux、systemd、cgroup v2、rsync 3.x、zstd、Polkit、BDSに必要なシステムライブラリを用意します。HTTPS終端は既存のCaddyを利用します。
+開発環境はRust 1.96以上です。ソースは開発PCとGitHubで管理し、本番VPSへは配布しません。VPSに必要なのは、x86_64 Linux、systemd、cgroup v2、rsync 3.x、zstd、Polkit、BDSが要求するシステムライブラリです。HTTPS終端はCaddyを使います。
 
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-cargo build --release --locked --bins --examples
-sudo python3 tests/linux_acceptance.py target/release/bdsctl target/release/examples/fake_bds
-deploy/package.sh
+python3 -m unittest discover -s tests -p 'test_distribution.py' -v
 ```
 
-CIは同じ検査をLinuxで実行し、Gitコミットを埋め込んだバイナリとチェックサムを成果物にします。VPSではコンパイルしません。`git pull`で更新したソースと同じCI成果物を取得し、`deploy/install.sh ARTIFACT_DIR`で検証して設置します。ソースとバイナリが一致しない場合は設置を拒否します。設置スクリプトはサービスを起動・有効化しません。
+CIで同じ検査とLinux隔離試験を実行し、静的リンクしたLinuxバイナリ、設定例、ビルド情報、検証結果、チェックサムを1つの配布物にします。ソースや開発ツールを含めません。バイナリには完全なGitコミットIDを埋め込み、配布・設置時に照合します。手元での通常ビルドは`development`として区別し、そのまま本番用に包装できません。
 
-常駐する2つのRustプロセスについて、合計PSS20MiB以下・待機時CPU0.1%以下を目標にしています。BDS本体、Caddy、バックアップ処理は別に測定します。検証用の模擬BDSを用いた測定と、本番環境の負荷は区別してください。
+開発PCの`deploy/stage.sh`で、指定コミットの成功したCI成果物をVPSの一時領域へ転送・検証します。ここではサービスを変更しません。停止後に`deploy/apply.sh`で設置用の処理をSSH経由で実行します。VPS上のGitチェックアウトや`git pull`は不要です。設置処理は設定を上書きせず、サービスを勝手に起動・有効化しません。
 
-初回の切り替えは[移行手順](docs/migration.md)、構造と失敗時の扱いは[設計](docs/design.md)を参照してください。
+本番に常設する管理プログラムは`/usr/local/bin/bdsctl`だけです。現在のビルド情報は`/usr/local/share/bdsctl/BUILD.json`へ配置します。旧実装や過去の測定記録をソースディレクトリに保存せず、履歴はGit、検査結果と配布物は対応するCI・Releaseで確認します。
+
+常駐する2つのRustプロセスの目標は、合計PSS20MiB以下・待機時CPU0.1%以下です。BDS本体・Caddy・実行中のバックアップは別に測定します。
+
+初回切り替えと通常更新は[移行・配布手順](docs/migration.md)、検査の内容は[検証方法](docs/testing.md)、構造と失敗時の扱いは[設計](docs/design.md)を参照してください。

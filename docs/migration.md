@@ -1,41 +1,63 @@
-# 停止してから移行する
+# 本番への移行
 
-この手順を実行するまでは、新版を本番サービスとして起動しません。切り替え前に、実際のBDSとアドオンを使った停止・バックアップ・再起動・接続確認の時間を確保してください。
+本番にGitリポジトリやRustソースは配置しません。開発PCでコミット・pushし、CI成功後のバイナリをVPSへ配布します。インストーラーはSSHの標準入力から実行するため、VPSに設置用ソースを残す必要もありません。
 
-## 1. ソースと成果物をそろえる
+## 1. 停止前に配布物を準備する
 
-ローカルで変更を確認し、Gitへコミット・送信します。同じコミットのCIを通し、`bdsctl-linux-x86_64-コミットID`の成果物を取得します。VPS側の`git pull`は、次の手順で旧BDSを正常停止した後に行います。起動・停止に旧スクリプトを使うサービスがあるため、稼働中に旧ファイルを置き換えないでください。
+開発PCで実行します。GitHub CLIでリポジトリへアクセスでき、SSH接続できることが前提です。
 
-必要なソフトウェアはrsync 3.x、zstd、Polkit、CaddyとBDSが要求する共有ライブラリです。`/var/lib/bds`と`/opt/bds/releases`に十分な空きを確保してください。初回移行は既存ワールドの独立コピー、本体の展開、初回バックアップが必要です。旧バックアップや切り戻し用データを先に削除しないでください。
+```sh
+export BDS_SSH_KEY="$HOME/.ssh/rvo.pem"
+commit=$(git rev-parse HEAD)
+deploy/stage.sh root@162.43.15.136 "$commit"
+```
 
-`bds.toml.example`を`/etc/bds/config.toml`へコピーし、root所有・644にします。旧`bds.conf`の設定は自動で読みません。通知先は現在のbds.shのWebhookと同じURLを`/etc/bds/webhook`に移します。TokenやWebhookをGitへ入れないでください。
+指定コミットの成功したCIから配布物を取得し、VPSの専用一時ディレクトリへ転送します。チェックサムと、バイナリに埋め込まれたコミットIDを検証します。この段階ではサービスも設定も変更しません。表示された配布先とコミットIDを次の手順で使います。
+
+必要なVPS側のソフトウェアは、systemd、cgroup v2、rsync 3.x、zstd、Polkit、BDSが要求する共有ライブラリです。既存のCaddyを利用します。Rust、Cargo、Git、GitHub TokenはVPSに不要です。
 
 ## 2. 旧サービスを停止する
 
-現在のバックアップ・更新・入退室通知・Discord操作のサービスとタイマーを一覧で確認します。移行中に旧タイマーがサーバーを起動しないよう、対象タイマーを先に停止・無効化し、Discord受付も停止します。Game8など別目的のタイマーは対象外です。
-
-ゲーム内に停止を予告してから、旧BDSを正常停止します。停止完了とBDSプロセスが残っていないことを確認してください。停止できない状態で移行を続けないでください。旧サービス定義・設定・BDSディレクトリを切り戻し用として保管します。
-
-インストール先と旧チェックアウトが同じ`/opt/bds`でも、新しいデータは`/var/lib/bds`に作ります。旧`/opt/bds/bedrock-server`は、新しいデータを検証するまで残します。
-
-## 3. 新版を設置・取り込む
-
-旧BDSと旧タイマーの停止を確認してから、VPS側で`git pull`し、CI成果物と同じコミットに合わせます。
+実行中のバックアップ・更新・再起動処理が終わるのを待ち、旧タイマーとDiscord受付・入退室監視を止めます。
 
 ```sh
-sudo deploy/install.sh /取得したCI成果物のディレクトリ
+sudo systemctl disable --now bds-backup.timer bds-update.timer
+sudo systemctl disable --now bds-discord-control.service bds-player-notify.service
+```
+
+ゲーム内に予告してから、旧BDSを正常停止します。
+
+```sh
+sudo systemctl stop bds.service
+```
+
+BDSのプロセスと子プロセスが残っていないことを確認します。停止が終わらなければ先へ進みません。旧スクリプトは、正常停止が終わるまで削除・置換しないでください。旧ソースの履歴はGitから取り出せます。秘密設定とワールドはGitの対象外なので、別途保全します。
+
+## 3. 設定と新版を設置する
+
+`/etc/bds/config.toml`をroot所有・644で用意します。配布物の`bds.toml.example`、または開発PCにあるGit対象外の`bds.toml`を使い、実際の設定に合わせます。Webhook URLは既存の通知先を引き継ぎ、`/etc/bds/webhook`へ分離します。TokenやWebhookを公開設定へ入れないでください。
+
+開発PCから、手順1で表示された配布先とコミットIDを指定します。
+
+```sh
+deploy/apply.sh root@162.43.15.136 /var/tmp/bdsctl-deploy-XXXXXXXX/bdsctl-linux-x86_64 "$commit"
+```
+
+停止状態・チェックサム・コミットIDを再確認し、バイナリとサービス定義を設置します。インストールだけでは起動も自動起動の有効化も行いません。設定ファイルは上書きしません。
+
+VPS側で通知ファイルの権限を設定し、停止した旧BDSからデータを取り込みます。
+
+```sh
 sudo chown root:bds-notify /etc/bds/webhook
 sudo chmod 640 /etc/bds/webhook
 sudo bdsctl import-legacy /opt/bds/bedrock-server
 ```
 
-`import-legacy`は既存データのない移行先専用です。停止した旧BDSディレクトリ、または`server/`と`metadata.json`を持つ全体バックアップのtar.gzを取り込めます。旧ディレクトリの`.installed-version`と同じ版を公式配布元から取得します。その版が配布されていない場合は停止し、別版へ勝手に更新しません。ワールドだけのtar.gzは直接の取り込み対象外です。
+取り込み先は、データが`/var/lib/bds/data`、Minecraft本体が`/opt/bedrock/releases`です。旧チェックアウトとは独立しています。既存データのある移行先へは上書きしません。停止した旧BDSディレクトリ、または`server/`と`metadata.json`を持つ全体バックアップのtar.gzが対象です。ワールドだけのtar.gzは直接取り込めません。
 
-旧データのリンクや特殊ファイル、直接変更された公式パックを検出した場合も移行を止めます。独自パックはデータ側へ分離されます。旧パックと公式パックの名前が同じ場合は、別名の独自パックへ整理してください。
+`.installed-version`と同じBDSを公式配布から取得します。取得できない場合、別版へ勝手に更新せず停止します。リンク・特殊ファイル・直接編集された公式パックも拒否します。独自パックはデータ側へ分離します。取り込み後にワールド名、server.properties、permissions、allowlist、アドオンを確認します。TCP/UDPの既存の許可設定を引き継いでください。
 
-取り込み後、`/var/lib/bds/data`の`server.properties`、権限、allowlist、ワールド名、使用アドオンを確認します。TCP/UDP 19132の既存の許可設定と、NetherNetの設定を引き継いでください。
-
-## 4. 起動と実際の接続を確認する
+## 4. 実際の接続とバックアップを確認する
 
 ```sh
 sudo systemctl start bds.service
@@ -43,19 +65,17 @@ sudo bdsctl status
 sudo bdsctl console 'list'
 ```
 
-Minecraftアプリから接続し、ワールド、アドオン、権限、入退室通知を確認します。次に`sudo bdsctl backup`で停止・バックアップ・起動の一巡を実施し、再度アプリから接続します。起動ログが出るだけでは移行完了としません。
+Minecraftアプリから接続し、ワールド・アドオン・権限を確認します。`sudo bdsctl backup`で停止・バックアップ・起動の一巡を実施し、再度アプリから接続します。起動ログだけでは完了と判定しません。移行直後のバックアップは`protect`で保護します。
 
-Caddyの既存設定に`deploy/Caddyfile.example`相当を統合し、検証してから反映します。既存の別サイト・証明書設定を上書きしないでください。旧Discord受付が同じ8765番ポートを使用していないことを確認し、新受付を起動します。
+Caddyで既存の`https://smp.rvo.jp/interactions`を`127.0.0.1:8765/interactions`へ転送します。配布物の`Caddyfile.example`を参考に既存設定へ統合し、設定を検証してから反映します。他のサイト設定を置き換えないでください。
 
 ```sh
 sudo systemctl start bds-discord.service
 ```
 
-DiscordのInteractions Endpoint URLは引き続き`https://smp.rvo.jp/interactions`です。必要ならコマンドを再登録します。許可ユーザー・許可ロールの各アカウントで確認画面を出し、キャンセルができること、許可されていないアカウントは実行できないことを確認します。OS再起動の実行試験は、別途停止できる時間帯に実施します。
+許可ユーザーと許可ロールで確認画面・キャンセルを確認し、許可されていない人は実行できないことを確認します。実際の再起動試験は停止可能な時間帯に行います。入退室通知も確認します。コマンドの再登録が必要な場合だけ、開発PCのドキュメントにある登録手順を使います。
 
-## 5. 自動起動を有効にする
-
-接続・バックアップ・通知を確認した後に有効化します。
+## 5. 自動運転を有効にし、旧配置を撤去する
 
 ```sh
 sudo systemctl enable bds.service bds-discord.service
@@ -63,9 +83,16 @@ sudo systemctl enable --now bds-daily.timer bds-update-check.timer
 sudo systemctl list-timers 'bds-*'
 ```
 
-翌朝の日次処理後もアプリから接続できることを確認してください。新旧のバックアップ・更新タイマーを同時に有効化しないでください。
+旧タイマーが無効で、新しい日次処理が日本時間04:30になっていることを確認します。翌朝の処理後もアプリから接続できることを確認してください。
 
-## 切り戻し
+検証後、旧ワールドやtar.gzバックアップの必要分をデータ保管先へ移します。旧形式のtar.gzを、新形式の`/var/lib/bds/backups`直下へ混在させないでください。例えば旧形式は`/var/backups/bds-tar`へまとめます。新形式のバックアップは復旧に必要なMinecraft本体と合わせて保管します。
 
-新版のタイマーとDiscord受付を止め、新版BDSを正常停止します。新版起動後にワールドが進んでいれば、旧版のワールドへ単純に戻すと進行を失います。切り戻し元の版とデータの対応を確認してください。移行直後で新版に変更がなければ、保管した旧サービス定義・旧設定・旧BDSディレクトリを戻し、旧サービスを起動します。新旧を同時に起動しないでください。
+旧チェックアウトを参照するサービスが残っていないことを確認し、旧サービス定義・旧Discordのsudoers設定・旧チェックアウト`/opt/bds`を撤去します。旧実装のコピーやGitチェックアウトを切り戻し用としてVPSに残しません。配布用一時ディレクトリも設置後に削除します。
 
+## 通常の更新と切り戻し
+
+bdsctl自身の更新も、開発PCでcommit/push → CI成功 → `stage.sh`で転送・検証 → タイマー・Discord受付・Minecraft停止 → `apply.sh`で置換 → 起動・接続確認の順です。VPS上で`git pull`やコンパイルは行いません。日々のMinecraft本体更新はbdsctlが別に管理します。
+
+本番に使う版は、検証済みコミットへ`v*`タグを付けてpushすると、同じ検査に通った配布物をGitHub Releaseへ保存できます。通常のCI成果物は90日保存です。タグの作成・公開は、採用する版を決めた時点で行います。
+
+bdsctlの切り戻しには、以前の採用版の検証済み配布物を再設置します。ワールド・設定の互換性も確認し、必要なら対応するバックアップを復元します。旧版のソースや実行ファイルの複製をVPS内へ積み重ねて管理しません。

@@ -28,7 +28,7 @@ impl Default for Paths {
     fn default() -> Self {
         Self {
             store: "/var/lib/bds".into(),
-            releases: "/opt/bds/releases".into(),
+            releases: "/opt/bedrock/releases".into(),
             runtime: "/run/bds".into(),
             diagnostics: "/var/lib/bds-supervisor".into(),
             discord_state: "/var/lib/bds-discord".into(),

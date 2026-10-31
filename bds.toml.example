@@ -1,7 +1,7 @@
 # 公開可能な設定。Webhook URL・Bot Tokenは書かないでください。
 [paths]
 store = "/var/lib/bds"
-releases = "/opt/bds/releases"
+releases = "/opt/bedrock/releases"
 runtime = "/run/bds"
 diagnostics = "/var/lib/bds-supervisor"
 discord_state = "/var/lib/bds-discord"
