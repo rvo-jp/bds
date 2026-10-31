@@ -45,6 +45,14 @@ fn finish_import(c: &Config) -> Result<()> {
     identifier(&tx.stage)?;
     ensure!(tx.stage.starts_with(".import-"), "取り込み記録が不正です");
     let stage = c.paths.store.join(&tx.stage);
+    match fs::symlink_metadata(c.current()) {
+        Ok(_) => ensure!(
+            releases::current(c)? == tx.release,
+            "取り込み記録と現在のBDS版が異なります"
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
     ensure!(
         !(stage.exists() && c.data().exists()),
         "取り込み元と配置先が両方存在します。管理者が確認してください"
@@ -53,12 +61,6 @@ fn finish_import(c: &Config) -> Result<()> {
         util::files(&stage)?;
         fs::rename(&stage, c.data())?;
         fs::File::open(&c.paths.store)?.sync_all()?;
-    }
-    if let Ok(current) = releases::current(c) {
-        ensure!(
-            current == tx.release,
-            "取り込み記録と現在のBDS版が異なります"
-        );
     }
     releases::prepare(c, &tx.release)?;
     chown_data(c)?;
@@ -730,7 +732,11 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
             "旧RakNet設定を先に整理してください"
         );
         util::sync_tree(&stage)?;
+        fs::create_dir_all(c.state())?;
         fs::File::open(&c.paths.store)?.sync_all()?;
+        // Even a failed directory fsync may leave the renamed checkpoint visible.
+        // Preserve its staging data before attempting to publish that checkpoint.
+        cleanup.persist();
         util::json(
             &import_path(c),
             &ImportTransaction {
@@ -739,7 +745,6 @@ pub fn import_legacy(c: &Config, source: &Path) -> Result<()> {
             },
             0o600,
         )?;
-        cleanup.persist();
         finish_import(c)
     })();
     if temporary.exists() {
