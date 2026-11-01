@@ -15,9 +15,10 @@ def run(*args,ok=True,timeout=120):
 
 def main():
     assert os.geteuid()==0 and sys.platform=='linux'
-    binary=pathlib.Path(sys.argv[1]).resolve();archive=pathlib.Path(sys.argv[2]).resolve()
+    source=pathlib.Path(sys.argv[1]).resolve();archive=pathlib.Path(sys.argv[2]).resolve()
     assert hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()==ZIP_SHA256
-    root=pathlib.Path(tempfile.mkdtemp(prefix='bds-real-',dir='/var/tmp'));root.chmod(0o755)
+    root=pathlib.Path(tempfile.mkdtemp(prefix='bds-real-',dir='/var/lib'));root.chmod(0o755)
+    binary=root/'bdsctl';shutil.copy2(source,binary)
     user='bds-real-'+uuid.uuid4().hex[:8];unit=user+'.service';unitfile=pathlib.Path('/run/systemd/system')/unit
     created=False
     try:
