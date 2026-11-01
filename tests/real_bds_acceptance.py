@@ -63,8 +63,7 @@ minimum_free_mib=0
             run('systemctl','start',unit)
             status=json.loads((root/'runtime/status.json').read_text());assert status['ready'] and not status['failed']
             assert pathlib.Path(f'/proc/{status["pid"]}/cwd').resolve()==work
-            for name in ['Dedicated_Server.txt','packet-statistics.txt','minecraftpe','premium_cache','treatments']:
-                assert (work/name).exists(),name
+            assert (work/'Dedicated_Server.txt').is_file()
             assert run('runuser','-u',user,'--','test','-w',work).returncode==0
             assert run('runuser','-u',user,'--','test','-w',vendor/'bedrock_server',ok=False).returncode!=0
             ctl('console','list')
@@ -77,6 +76,9 @@ minimum_free_mib=0
             assert (work/'cache-probe').read_text()=='retained'
             run('systemctl','stop',unit)
             assert json.loads((root/'runtime/status.json').read_text())['stopped']
+            # Statistics output is optional without client traffic; caches can flush on exit.
+            for name in ['Dedicated_Server.txt','minecraftpe','premium_cache','treatments']:
+                assert (work/name).exists(),name
             print(f'PASS real BDS cycle {attempt+1}: writable engine state, ready, normal exit',flush=True)
         for rel,digest in vendor_files.items():assert hashlib.file_digest((vendor/rel).open('rb'),'sha256').hexdigest()==digest,rel
         assert {str(p.relative_to(vendor)) for p in vendor.rglob('*') if p.is_file()}==set(vendor_files)
