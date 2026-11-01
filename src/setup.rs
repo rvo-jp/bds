@@ -31,6 +31,7 @@ Group=bds
 ExecStartPre=+{exec} start-check
 ExecStart={exec} supervise
 Restart=on-failure
+RestartPreventExitStatus=78
 RestartSec={}
 TimeoutStartSec=infinity
 TimeoutStopSec=infinity
@@ -46,7 +47,7 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths={} {} {} {}
+ReadWritePaths={} {} {}
 
 [Install]
 WantedBy=multi-user.target
@@ -55,7 +56,6 @@ WantedBy=multi-user.target
             c.server.start_limit,
             c.server.restart_seconds,
             quote(&c.paths.store),
-            quote(&c.paths.releases),
             quote(&c.paths.runtime),
             quote(&c.paths.diagnostics)
         ),

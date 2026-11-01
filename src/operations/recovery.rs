@@ -71,7 +71,13 @@ fn cleanup_staging(c: &Config) -> Result<()> {
     for (root, prefixes) in [
         (
             c.paths.store.clone(),
-            vec![".restore-", ".import-", ".legacy-", ".recovery-"],
+            vec![
+                ".restore-",
+                ".import-",
+                ".legacy-",
+                ".recovery-",
+                ".engine-",
+            ],
         ),
         (c.snapshots(), vec![".partial-"]),
         (c.paths.releases.clone(), vec![".recovery-"]),
@@ -95,7 +101,11 @@ fn cleanup_staging(c: &Config) -> Result<()> {
 
 fn prepare_current(c: &Config) -> Result<()> {
     match fs::symlink_metadata(c.current()) {
-        Ok(_) => releases::prepare(c, &releases::current(c)?),
+        Ok(_) => {
+            let id = releases::current(c)?;
+            releases::prepare(c, &id)?;
+            own_working(c, &id)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             ensure!(
                 !c.data().exists(),
@@ -114,4 +124,33 @@ pub(crate) fn prepare_after_maintenance(c: &Config) -> Result<()> {
         chown_data(c)?;
     }
     Ok(())
+}
+
+fn own_working(c: &Config, id: &str) -> Result<()> {
+    // prepare may add missing top-level data paths; do not rescan/fsync the whole world.
+    let owner = format!("{}:{}", c.server.user, c.server.user);
+    let mut args = vec!["-h", owner.as_str()];
+    let paths: Vec<_> = std::iter::once(c.data())
+        .chain(
+            releases::MUTABLE
+                .iter()
+                .chain(releases::PACKS)
+                .map(|name| c.data().join(name)),
+        )
+        .collect();
+    for path in &paths {
+        args.push(path.to_str().context("データのパスが不正です")?);
+    }
+    util::run("chown", &args)?;
+    util::run(
+        "chown",
+        &[
+            "-hR",
+            &format!("{}:{}", c.server.user, c.server.user),
+            releases::working(c, id)
+                .to_str()
+                .context("実行領域のパスが不正です")?,
+        ],
+    )?;
+    util::chmod(&releases::working(c, id), 0o700)
 }

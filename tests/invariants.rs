@@ -581,3 +581,58 @@ fn legacy_preflight_accepts_only_exact_historical_files_without_touching_source(
     assert!(operations::prepare_legacy(&f.c, &legacy, "1.2.3.3").is_err());
     assert!(!plan.exists() && !f.c.data().exists());
 }
+
+#[test]
+fn execution_copy_is_writable_disposable_and_preserves_canonical_data() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.c.data().join("worlds")).unwrap();
+    fs::write(f.c.data().join("worlds/data"), "canonical-world").unwrap();
+    let vendor = f.c.paths.releases.join("1.2.3.4");
+    fs::create_dir_all(vendor.join("resource_packs/vanilla")).unwrap();
+    fs::write(
+        vendor.join("resource_packs/vanilla/manifest.json"),
+        "official-pack",
+    )
+    .unwrap();
+    fs::write(vendor.join("bedrock_server"), "official-executable").unwrap();
+    fs::write(
+        vendor.join("release.json"),
+        r#"{"id":"1.2.3.4","url":"fixture","sha256":"fixture"}"#,
+    )
+    .unwrap();
+    releases::prepare(&f.c, "1.2.3.4").unwrap();
+    let work = releases::working(&f.c, "1.2.3.4");
+    assert_eq!(
+        fs::read_link(work.join("worlds")).unwrap(),
+        f.c.data().join("worlds")
+    );
+    assert!(!vendor.join("worlds").exists());
+    fs::create_dir(work.join("new-engine-cache")).unwrap();
+    fs::write(work.join("new-engine-cache/value"), "keep-across-restarts").unwrap();
+    fs::write(
+        work.join("resource_packs/vanilla/manifest.json"),
+        "engine-write",
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(vendor.join("resource_packs/vanilla/manifest.json")).unwrap(),
+        "official-pack"
+    );
+    releases::prepare(&f.c, "1.2.3.4").unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("new-engine-cache/value")).unwrap(),
+        "keep-across-restarts"
+    );
+    let snapshot = snapshots::capture(&f.c, "1.2.3.4").unwrap();
+    assert!(snapshot.files.keys().all(|p| !p.starts_with("engine")));
+    fs::remove_dir_all(&work).unwrap();
+    releases::prepare(&f.c, "1.2.3.4").unwrap();
+    assert_eq!(
+        fs::read_to_string(work.join("worlds/data")).unwrap(),
+        "canonical-world"
+    );
+    assert_eq!(
+        fs::read_to_string(work.join("resource_packs/vanilla/manifest.json")).unwrap(),
+        "official-pack"
+    );
+}

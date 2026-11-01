@@ -19,7 +19,15 @@ fn main() {
     } else {
         Some(TcpListener::bind(format!("127.0.0.1:{port}")).unwrap())
     };
-    println!("[2026-10-31 00:00:00:000 INFO] Server started.");
+    #[cfg(target_os = "linux")]
+    if mode.trim() == "uninspectable" {
+        assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0) }, 0);
+    }
+    if mode.trim() == "stderr-start" {
+        eprintln!("[2026-10-31 00:00:00:000 INFO] Server started.");
+    } else {
+        println!("[2026-10-31 00:00:00:000 INFO] Server started.");
+    }
     io::stdout().flush().unwrap();
     for line in io::stdin().lock().lines() {
         let Ok(line) = line else { break };
@@ -35,6 +43,7 @@ fn main() {
         if line == "close-output" {
             unsafe {
                 libc::close(libc::STDOUT_FILENO);
+                libc::close(libc::STDERR_FILENO);
             }
             continue;
         }

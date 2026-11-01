@@ -84,6 +84,25 @@ allowed_users = ["3333333333333333333"]
         assert '*:00:00 Asia/Tokyo' in (root/'generated/bds-update.timer').read_text()
         assert ' auto-update' in (root/'generated/bds-update.service').read_text()
         run('systemctl','start',unit,receiver);assert status()['ready'];check('systemd READY requires owned TCP listener and console response')
+        work=root/'store/engine/1.2.3.4'
+        assert (work/'worlds').resolve()==data/'worlds'
+        assert not any(p.is_symlink() for p in release.rglob('*'))
+        assert run('runuser','-u',user,'--','test','-w',work).returncode==0
+        assert run('runuser','-u',user,'--','test','-w',release/'bedrock_server',ok=False).returncode!=0
+        check('execution directory is writable without granting writes to the vendor release')
+        # A kernel-observation failure must not be retried as a broken BDS startup.
+        run('systemctl','stop',unit);(work/'mode').write_text('uninspectable')
+        before_restarts=run('systemctl','show',unit,'-p','NRestarts','--value').stdout
+        assert run('systemctl','start',unit,ok=False).returncode
+        time.sleep(2)
+        assert run('systemctl','show',unit,'-p','ExecMainStatus','--value').stdout.strip()=='78'
+        assert run('systemctl','show',unit,'-p','NRestarts','--value').stdout==before_restarts
+        assert '起動確認処理の異常' in status()['reason']
+        assert run('systemctl','show',unit,'-p','MainPID','--value').stdout.strip()=='0'
+        (work/'mode').write_text('stderr-start');run('systemctl','reset-failed',unit);run('systemctl','start',unit)
+        assert status()['ready'];run('systemctl','stop',unit);(work/'mode').unlink()
+        run('systemctl','start',unit);assert status()['ready']
+        check('inspection permission failure stops cleanly without retries, and stderr startup logs are captured')
         # Neither recovery entry point may mutate a running BDS release.
         invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
         def release_links():return {str(p):p.lstat().st_ino for p in release.rglob('*') if p.is_symlink()}
@@ -167,10 +186,10 @@ allowed_users = ["3333333333333333333"]
         assert run('systemctl','show',unit,'-p','ActiveState','--value').stdout.strip()=='inactive'
         run('systemctl','start',unit)
         check('persistent maintenance blocks scheduled and manual starts, then restores only previously running BDS')
-        ctl('maintenance-begin');(release/'mode').write_text('no-console')
+        ctl('maintenance-begin');(root/'store/engine/1.2.3.4/mode').write_text('no-console')
         assert ctl('maintenance-end',ok=False).returncode and mode.exists()
         assert run('systemctl','show',unit,'-p','MainPID','--value').stdout.strip()=='0'
-        (release/'mode').unlink();run('systemctl','reset-failed',unit);ctl('maintenance-end')
+        (root/'store/engine/1.2.3.4/mode').unlink();run('systemctl','reset-failed',unit);ctl('maintenance-end')
         assert status()['ready'] and not mode.exists()
         check('maintenance exit failure preserves guard and permits an explicit repaired retry')
         # A preflight failure must not send announcements, stop BDS or create a transaction.
@@ -275,7 +294,7 @@ allowed_users = ["3333333333333333333"]
         check('daily backup remains independent and does not apply a staged update')
         # A failed service must never turn its world into a successful daily generation.
         existing=backup_ids();success=(root/'store/state/maintenance-success.json').read_bytes()
-        active_release=(root/'releases/current').resolve();(active_release/'mode').write_text('no-console')
+        active_release=root/'store/engine'/os.readlink(root/'releases/current');(active_release/'mode').write_text('no-console')
         # A clean inactive unit may have been garbage-collected by systemd.
         run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit,ok=False)
         until=time.monotonic()+15
@@ -424,7 +443,7 @@ allowed_users = ["3333333333333333333"]
         assert preserved.read_text()=='retain initialized data'
         check('init recovery handles publication boundaries and rejects unknown preexisting data')
         # A status write failure must not deadlock BDS on its stdout pipe.
-        active_release=(root/'releases/current').resolve()
+        active_release=root/'store/engine'/os.readlink(root/'releases/current')
         (active_release/'mode').write_text('large-stop-output');run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit);assert status()['ready']
         status_file=root/'runtime/status.json';status_file.unlink();status_file.mkdir()
         run('systemctl','--no-block','stop',unit)

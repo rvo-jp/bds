@@ -26,6 +26,10 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CC_x86_64_unknown_linux_musl: musl-gcc
       - run: sudo env BDS_ACCEPTANCE_REPORT="$RUNNER_TEMP/bds-validation.json" python3 tests/linux_acceptance.py target/x86_64-unknown-linux-musl/release/bdsctl target/x86_64-unknown-linux-musl/release/examples/fake_bds
+      - name: Test official BDS in a private network
+        run: |
+          curl --fail --location --retry 2 --max-time 180 -A 'Mozilla/5.0 bdsctl' -o "$RUNNER_TEMP/bedrock.zip" https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-1.26.61.1.zip
+          sudo python3 tests/real_bds_acceptance.py target/x86_64-unknown-linux-musl/release/bdsctl "$RUNNER_TEMP/bedrock.zip"
       - run: deploy/package.sh
         env:
           BDS_VALIDATION_REPORT: ${{ runner.temp }}/bds-validation.json

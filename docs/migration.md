@@ -14,7 +14,7 @@ deploy/stage.sh root@192.0.2.10 "$commit"
 
 指定コミットの成功したCIから配布物を取得し、VPSの専用一時ディレクトリへ転送します。チェックサムと、バイナリに埋め込まれたコミットIDを検証します。この段階ではサービスも設定も変更しません。表示された配布先とコミットIDを次の手順で使います。
 
-必要なVPS側のソフトウェアは、systemd、cgroup v2、rsync 3.x、zstd、Polkit、BDSが要求する共有ライブラリです。既存のCaddyを利用します。Rust、Cargo、Git、GitHub TokenはVPSに不要です。
+必要なVPS側のソフトウェアは、systemd、cgroup v2、rsync 3.x、zstd、Polkit、BDSが要求する共有ライブラリです。既存のCaddyを利用します。初回の新版起動時には、使用するBDS版の実行コピーを`/var/lib/bds/engine/VERSION`へ作成します。コピーに本体と同程度の追加容量が必要です。ワールド・設定の保存先と既存のバックアップ形式は変わりません。Rust、Cargo、Git、GitHub TokenはVPSに不要です。
 
 ### Minecraft本体と旧パックの差分を停止前に検証する
 

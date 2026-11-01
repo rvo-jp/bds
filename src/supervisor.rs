@@ -67,42 +67,66 @@ pub fn running(c: &Config) -> bool {
             && util::prop(&c.server.unit, "InvocationID").is_ok_and(|id| id == s.invocation)
     })
 }
+/// Failure to inspect the kernel is a manager fault, not evidence of a dead BDS.
+#[derive(Debug)]
+pub struct ObservationError(anyhow::Error);
+impl std::fmt::Display for ObservationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "起動確認処理の異常（自動再試行を停止）: {:#}", self.0)
+    }
+}
+impl std::error::Error for ObservationError {}
+
 #[cfg(target_os = "linux")]
-pub fn owns_listener(pid: u32, port: u16) -> bool {
-    let Ok(entries) = fs::read_dir(format!("/proc/{pid}/fd")) else {
-        return false;
-    };
+pub fn owns_listener(pid: u32, port: u16) -> Result<bool> {
+    inspect_listener(std::path::Path::new("/proc"), pid, port)
+        .map_err(|e| ObservationError(e).into())
+}
+#[cfg(target_os = "linux")]
+fn inspect_listener(proc: &std::path::Path, pid: u32, port: u16) -> Result<bool> {
+    let root = proc.join(pid.to_string());
     let mut sockets = std::collections::HashSet::new();
-    for e in entries.flatten() {
-        if let Ok(p) = fs::read_link(e.path()) {
-            let t = p.to_string_lossy();
-            if let Some(s) = t.strip_prefix("socket:[").and_then(|s| s.strip_suffix(']')) {
-                sockets.insert(s.to_string());
-            }
+    for e in fs::read_dir(root.join("fd")).context("BDSのFD一覧を読めません")? {
+        let e = e?;
+        let path = match fs::read_link(e.path()) {
+            Ok(path) => path,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue, // Concurrent close.
+            Err(e) => return Err(e).context("BDSのFDを確認できません"),
+        };
+        let text = path.to_string_lossy();
+        if let Some(inode) = text
+            .strip_prefix("socket:[")
+            .and_then(|s| s.strip_suffix(']'))
+        {
+            sockets.insert(inode.to_string());
         }
     }
+    let mut found = false;
     for kind in ["tcp", "tcp6"] {
-        if let Ok(text) = fs::read_to_string(format!("/proc/{pid}/net/{kind}")) {
-            for line in text.lines().skip(1) {
-                let f: Vec<_> = line.split_whitespace().collect();
-                if f.len() > 9
-                    && f[3] == "0A"
-                    && f[1]
-                        .split_once(':')
-                        .and_then(|(_, p)| u16::from_str_radix(p, 16).ok())
-                        == Some(port)
-                    && sockets.contains(f[9])
-                {
-                    return true;
-                }
-            }
+        let text = match fs::read_to_string(root.join("net").join(kind)) {
+            Ok(text) => text,
+            Err(e) if kind == "tcp6" && e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).context("TCP待受表を読めません"),
+        };
+        ensure!(
+            text.lines()
+                .next()
+                .is_some_and(|l| l.contains("local_address")),
+            "TCP待受表の形式が不正です"
+        );
+        for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
+            let f: Vec<_> = line.split_whitespace().collect();
+            ensure!(f.len() > 9, "TCP待受表の行が不正です");
+            let local = f[1].split_once(':').context("TCPアドレスが不正です")?;
+            let bound = u16::from_str_radix(local.1, 16).context("TCPポートが不正です")?;
+            found |= f[3] == "0A" && bound == port && sockets.contains(f[9]);
         }
     }
-    false
+    Ok(found)
 }
 #[cfg(not(target_os = "linux"))]
-pub fn owns_listener(_: u32, _: u16) -> bool {
-    false
+pub fn owns_listener(_: u32, _: u16) -> Result<bool> {
+    Err(ObservationError(anyhow::anyhow!("TCP待受の確認はLinux専用です")).into())
 }
 fn nonblocking(fd: i32) -> Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -160,7 +184,7 @@ fn wait(fds: &mut [libc::pollfd], deadline: Option<Instant>) -> Result<()> {
 // Even if state/log writes fail, consume BDS output until it can exit.
 fn stop_after_error(
     child: &mut Child,
-    output: &mut std::process::ChildStdout,
+    output: &mut (impl Read + AsRawFd),
     queue: &mut VecDeque<u8>,
     mut signals: Option<&mut Signals>,
 ) -> Result<std::process::ExitStatus> {
@@ -289,7 +313,7 @@ impl Startup {
             return Ok(false);
         }
         self.next_check = now + Duration::from_secs(1);
-        if !owns_listener(pid, port(c)?) {
+        if !owns_listener(pid, port(c)?)? {
             self.stable = None;
             self.confirmed = false;
             self.pending = None;
@@ -375,16 +399,25 @@ pub fn run(c: &Config) -> Result<()> {
                 }
             }
         })?;
+    // Keep stderr in the same bounded event stream as stdout, including startup errors.
+    let (mut output, child_output) = UnixStream::pair()?;
     let mut command = Command::new(&executable);
     command
-        .current_dir(c.current())
+        .current_dir(crate::releases::working(c, &crate::releases::current(c)?))
         .env("LD_LIBRARY_PATH", c.current())
+        .env(
+            "HOME",
+            crate::releases::working(c, &crate::releases::current(c)?),
+        )
         .env_remove("NOTIFY_SOCKET")
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::from(std::os::fd::OwnedFd::from(
+            child_output.try_clone()?,
+        )))
+        .stderr(Stdio::from(std::os::fd::OwnedFd::from(child_output)));
     signals.configure_child(&mut command);
     let mut child = command.spawn()?;
+    drop(command);
     let mut s = Status {
         invocation: std::env::var("INVOCATION_ID").unwrap_or_default(),
         boot: util::boot(),
@@ -392,7 +425,6 @@ pub fn run(c: &Config) -> Result<()> {
         port: p,
         ..Status::default()
     };
-    let mut output = child.stdout.take().unwrap();
     let mut startup = Startup::new(c);
     let mut stopping = false;
     let mut stop_requested = false;
@@ -400,6 +432,7 @@ pub fn run(c: &Config) -> Result<()> {
     let mut queue = VecDeque::new();
     let mut buffer = Vec::new();
     let mut logs = VecDeque::new();
+    let mut startup_error: Option<anyhow::Error> = None;
     let outcome = (|| -> Result<()> {
         nonblocking(output.as_raw_fd())?;
         nonblocking(child.stdin.as_ref().unwrap().as_raw_fd())?;
@@ -500,7 +533,9 @@ pub fn run(c: &Config) -> Result<()> {
                 return if s.stopped {
                     Ok(())
                 } else {
-                    bail!("BDSが異常終了しました")
+                    Err(startup_error
+                        .take()
+                        .unwrap_or_else(|| anyhow::anyhow!("BDSが異常終了しました")))
                 };
             }
             if stop_requested && !stopping {
@@ -523,8 +558,20 @@ pub fn run(c: &Config) -> Result<()> {
                     }
                     Ok(false) => {}
                     Err(error) => {
+                        // A child can exit between try_wait and the /proc read.
+                        let error = if error.is::<ObservationError>() && child.try_wait()?.is_some()
+                        {
+                            anyhow::anyhow!("BDSが起動確認中に終了しました")
+                        } else {
+                            error
+                        };
                         failure(c, &mut s, &format!("{error:#}"), &logs)?;
-                        let _ = tx.try_send("Minecraftの起動確認に失敗しました。正常停止後に制限内で復旧を試みます。".into());
+                        let _ = tx.try_send(if error.is::<ObservationError>() {
+                            "管理側の起動確認処理に失敗しました。Minecraftを正常停止し、自動再試行を中止します。".into()
+                        } else {
+                            "Minecraftの起動確認に失敗しました。正常停止後に制限内で復旧を試みます。".into()
+                        });
+                        startup_error = Some(error);
                         stopping = true;
                         enqueue(&mut queue, "stop")?;
                         let _ = notify("STOPPING=1\nSTATUS=起動失敗を記録して正常停止中");

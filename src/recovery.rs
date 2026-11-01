@@ -6,47 +6,13 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
+    path::Path,
     process::{Command, Stdio},
 };
 #[derive(Serialize, Deserialize)]
 struct Manifest {
     schema: u32,
     files: BTreeMap<String, String>,
-}
-/// Prepared releases contain links into live data. Export only immutable vendor files.
-fn vendor_files(root: &Path) -> Result<Vec<PathBuf>> {
-    fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
-        for e in fs::read_dir(dir)? {
-            let e = e?;
-            let path = e.path();
-            let rel = path.strip_prefix(root)?;
-            let first = rel.components().next().unwrap().as_os_str();
-            if releases::MUTABLE.iter().any(|s| first == *s) {
-                continue;
-            }
-            let m = fs::symlink_metadata(&path)?;
-            if m.file_type().is_symlink() {
-                ensure!(
-                    releases::PACKS.iter().any(|s| rel.starts_with(s))
-                        && rel.components().count() == 2,
-                    "本体に不明なリンクがあります"
-                );
-                continue;
-            }
-            if m.is_dir() {
-                walk(root, &path, out)?;
-            } else {
-                ensure!(m.is_file(), "本体に特殊ファイルがあります");
-                out.push(rel.to_path_buf());
-            }
-        }
-        Ok(())
-    }
-    let mut out = vec![];
-    walk(root, root, &mut out)?;
-    out.sort();
-    Ok(out)
 }
 pub fn export(c: &Config, id: &str, to: &Path) -> Result<()> {
     let s = snapshots::verify(c, id)?;
@@ -79,7 +45,11 @@ pub fn export(c: &Config, id: &str, to: &Path) -> Result<()> {
                 c.snapshots().join(id).join("data"),
                 util::files(&c.snapshots().join(id).join("data"))?,
             ),
-            ("release", release.clone(), vendor_files(&release)?),
+            (
+                "release",
+                release.clone(),
+                releases::vendor_files(&release)?,
+            ),
         ] {
             // Preserve empty data directories too; release directories are rebuilt by prepare.
             if prefix == "data" {
@@ -260,7 +230,7 @@ pub fn import(c: &Config, source: &Path) -> Result<()> {
     util::reserve(c, util::tree_bytes(&work.join("data"))?)?;
     let final_release = c.paths.releases.join(&s.release);
     if final_release.exists() {
-        let paths = vendor_files(&final_release)?;
+        let paths = releases::vendor_files(&final_release)?;
         ensure!(
             paths.len() == util::files(&work.join("release"))?.len(),
             "既存の本体と復元用本体が異なります"

@@ -6,7 +6,11 @@ use std::path::Path;
 fn main() {
     if let Err(error) = run() {
         eprintln!("bdsctl: {error:#}");
-        std::process::exit(1)
+        std::process::exit(if error.is::<supervisor::ObservationError>() {
+            78
+        } else {
+            1
+        })
     }
 }
 fn run() -> Result<()> {

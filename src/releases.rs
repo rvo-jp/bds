@@ -230,16 +230,100 @@ pub fn download(c: &Config, id: &str, url: &str) -> Result<Release> {
     }
     result
 }
+/// A writable execution copy is disposable; data() remains the sole backup source.
+pub fn working(c: &Config, id: &str) -> PathBuf {
+    c.paths.store.join("engine").join(id)
+}
+
+/// Both execution copies and exports exclude links left by older installations.
+pub(crate) fn vendor_files(root: &Path) -> Result<Vec<PathBuf>> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+        for e in fs::read_dir(dir)? {
+            let e = e?;
+            let path = e.path();
+            let rel = path.strip_prefix(root)?;
+            let first = rel.components().next().unwrap().as_os_str();
+            if MUTABLE.iter().any(|s| first == *s) {
+                continue;
+            }
+            let m = fs::symlink_metadata(&path)?;
+            if m.file_type().is_symlink() {
+                ensure!(
+                    PACKS.iter().any(|s| rel.starts_with(s)) && rel.components().count() == 2,
+                    "本体に不明なリンクがあります"
+                );
+            } else if m.is_dir() {
+                walk(root, &path, out)?;
+            } else {
+                ensure!(m.is_file(), "本体に特殊ファイルがあります");
+                out.push(rel.to_path_buf());
+            }
+        }
+        Ok(())
+    }
+    let mut out = vec![];
+    walk(root, root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn directory(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(m) => ensure!(
+            m.is_dir() && !m.file_type().is_symlink(),
+            "通常のディレクトリが必要です: {}",
+            path.display()
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(path)?;
+        }
+        Err(e) => return Err(e.into()),
+    }
+    Ok(())
+}
+
 pub fn prepare(c: &Config, id: &str) -> Result<()> {
     identifier(id)?;
-    util::files(&c.data())?; // Refuse user-created links before any privileged writes.
+    util::files(&c.data())?;
     let release = c.paths.releases.join(id);
+    ensure!(
+        fs::symlink_metadata(&release)?.is_dir(),
+        "版の保存先が不正です"
+    );
     ensure!(release.join("release.json").is_file(), "版が存在しません");
+    // A failed copy is never published. Existing execution copies retain BDS caches.
+    directory(&c.paths.store.join("engine"))?;
+    util::chmod(&c.paths.store.join("engine"), 0o755)?;
+    let final_work = working(c, id);
+    let mut unpublished = None;
+    let work = if fs::symlink_metadata(&final_work)
+        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    {
+        let files = vendor_files(&release)?;
+        let bytes = files.iter().try_fold(0u64, |n, p| -> Result<u64> {
+            n.checked_add(fs::metadata(release.join(p))?.len())
+                .context("実行領域のサイズが不正です")
+        })?;
+        util::reserve(c, bytes)?;
+        let stage = c.paths.store.join(format!(".engine-{}", util::nonce()?));
+        fs::create_dir(&stage)?;
+        let cleanup = util::CleanupDir(stage.clone());
+        for rel in files {
+            let dest = stage.join(&rel);
+            fs::create_dir_all(dest.parent().unwrap())?;
+            fs::copy(release.join(&rel), &dest)?;
+        }
+        util::sync_tree(&stage)?;
+        unpublished = Some(cleanup);
+        stage
+    } else {
+        final_work.clone()
+    };
+    directory(&work)?;
     for name in MUTABLE {
         let source = c.data().join(name);
         if !source.exists() {
             if source.extension().is_some() {
-                fs::create_dir_all(source.parent().unwrap())?;
                 fs::write(
                     &source,
                     if *name == "server.properties" {
@@ -252,26 +336,29 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
                 fs::create_dir_all(&source)?;
             }
         }
-        let target = release.join(name);
-        if let Ok(m) = fs::symlink_metadata(&target) {
-            if m.is_dir() && !m.file_type().is_symlink() {
-                fs::remove_dir_all(&target)?;
-            } else {
-                fs::remove_file(&target)?;
+        let target = work.join(name);
+        match fs::symlink_metadata(&target) {
+            Ok(m) => {
+                ensure!(
+                    m.file_type().is_symlink() && fs::read_link(&target)? == source,
+                    "実行領域に不明なデータがあります: {}",
+                    target.display()
+                );
             }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => symlink(&source, &target)?,
+            Err(e) => return Err(e.into()),
         }
-        symlink(source, target)?;
     }
     for name in PACKS {
-        let root = release.join(name);
-        fs::create_dir_all(&root)?;
+        let root = work.join(name);
+        directory(&root)?;
         let custom = c.data().join(name);
         fs::create_dir_all(&custom)?;
         for e in fs::read_dir(&root)? {
             let e = e?;
             if e.file_type()?.is_symlink() {
                 ensure!(
-                    fs::read_link(e.path())?.starts_with(&custom),
+                    fs::read_link(e.path())? == custom.join(e.file_name()),
                     "不明なパックのリンクです"
                 );
                 fs::remove_file(e.path())?;
@@ -285,14 +372,20 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
             );
             let dest = root.join(e.file_name());
             ensure!(
-                !dest.exists(),
+                !dest.try_exists()?,
                 "公式パックと独自パックが衝突しています: {}",
                 e.file_name().to_string_lossy()
             );
             symlink(e.path(), dest)?;
         }
     }
-    util::sync_dirs(&release)
+    util::sync_dirs(&work)?;
+    if let Some(cleanup) = unpublished {
+        fs::rename(&work, &final_work)?;
+        fs::File::open(final_work.parent().unwrap())?.sync_all()?;
+        cleanup.persist();
+    }
+    Ok(())
 }
 
 pub fn prune(c: &Config, protected: &[String]) -> Result<()> {
@@ -321,6 +414,11 @@ pub fn prune(c: &Config, protected: &[String]) -> Result<()> {
     for id in entries {
         if !keep.contains(&id) {
             identifier(&id)?;
+            let work = working(c, &id);
+            if work.try_exists()? {
+                ensure!(fs::symlink_metadata(&work)?.is_dir(), "実行領域が不正です");
+                fs::remove_dir_all(work)?;
+            }
             fs::remove_dir_all(c.paths.releases.join(id))?;
         }
     }
