@@ -323,7 +323,7 @@ allowed_users = ["3333333333333333333"]
         assert os.readlink(recovery/'releases/current')=='1.2.3.4'
         assert (recovery/'store/data/behavior_packs/custom/manifest.json').read_text()=='fixture-custom-pack'
         assert (recovery/'store/data/behavior_packs/custom/empty').is_dir()
-        assert (recovery/'releases/1.2.3.4/behavior_packs/custom').resolve()==recovery/'store/data/behavior_packs/custom'
+        assert (recovery/'store/engine/1.2.3.4/behavior_packs/custom').resolve()==recovery/'store/data/behavior_packs/custom'
         assert restoring('import-package',root/'snapshot.tar.zst',ok=False).returncode
         for name in ['runtime','diagnostics']:os.chown(recovery/name,account.pw_uid,account.pw_gid)
         restoring('generate-units',recovery/'generated',binary)

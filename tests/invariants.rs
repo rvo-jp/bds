@@ -636,3 +636,29 @@ fn execution_copy_is_writable_disposable_and_preserves_canonical_data() {
         "official-pack"
     );
 }
+
+#[test]
+fn failed_execution_copy_is_not_published_and_can_be_rebuilt() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.c.data()).unwrap();
+    let vendor = f.c.paths.releases.join("1.2.3.4");
+    fs::create_dir_all(&vendor).unwrap();
+    fs::write(vendor.join("bedrock_server"), "fixture").unwrap();
+    fs::write(vendor.join("release.json"), "{}").unwrap();
+    fs::write(vendor.join("world_templates"), "invalid directory").unwrap();
+    assert!(releases::prepare(&f.c, "1.2.3.4").is_err());
+    assert!(!releases::working(&f.c, "1.2.3.4").exists());
+    assert!(fs::read_dir(&f.c.paths.store).unwrap().all(|e| {
+        !e.unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".engine-")
+    }));
+    fs::remove_file(vendor.join("world_templates")).unwrap();
+    releases::prepare(&f.c, "1.2.3.4").unwrap();
+    assert!(
+        releases::working(&f.c, "1.2.3.4")
+            .join("world_templates")
+            .is_dir()
+    );
+}

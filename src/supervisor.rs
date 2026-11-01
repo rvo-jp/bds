@@ -378,7 +378,10 @@ pub fn run(c: &Config) -> Result<()> {
     fs::create_dir_all(&c.paths.runtime)?;
     let _lock = util::Lock::acquire(&c.paths.runtime.join("supervisor.lock"), 0)?;
     let p = port(c)?;
-    let executable = c.current().join("bedrock_server");
+    let release = crate::releases::current(c)?;
+    let vendor = c.paths.releases.join(&release);
+    let work = crate::releases::working(c, &release);
+    let executable = vendor.join("bedrock_server");
     ensure!(executable.is_file(), "BDS本体がありません");
     let recovered = status(c).map(|s| s.failed).unwrap_or(false);
     if c.socket().exists() {
@@ -403,12 +406,9 @@ pub fn run(c: &Config) -> Result<()> {
     let (mut output, child_output) = UnixStream::pair()?;
     let mut command = Command::new(&executable);
     command
-        .current_dir(crate::releases::working(c, &crate::releases::current(c)?))
-        .env("LD_LIBRARY_PATH", c.current())
-        .env(
-            "HOME",
-            crate::releases::working(c, &crate::releases::current(c)?),
-        )
+        .current_dir(&work)
+        .env("LD_LIBRARY_PATH", &vendor)
+        .env("HOME", &work)
         .env_remove("NOTIFY_SOCKET")
         .stdin(Stdio::piped())
         .stdout(Stdio::from(std::os::fd::OwnedFd::from(
@@ -638,6 +638,29 @@ pub fn run(c: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn unavailable_or_invalid_proc_is_not_an_absent_listener() {
+        let root = std::env::temp_dir().join(format!("bds-proc-{}", util::nonce().unwrap()));
+        let _cleanup = util::CleanupDir(root.clone());
+        let process = root.join("7");
+        fs::create_dir_all(process.join("fd")).unwrap();
+        fs::create_dir_all(process.join("net")).unwrap();
+        std::os::unix::fs::symlink("socket:[42]", process.join("fd/1")).unwrap();
+        let tcp = process.join("net/tcp");
+        fs::write(&tcp, "sl local_address remote_address st tx_queue rx_queue uid timeout inode\n0: 00000000:4ABC 00000000:0000 0A 0:0 0:0 0 1000 0 42\n").unwrap();
+        assert!(inspect_listener(&root, 7, 19132).unwrap());
+        assert!(!inspect_listener(&root, 7, 19133).unwrap());
+        fs::write(&tcp, "invalid table").unwrap();
+        assert!(inspect_listener(&root, 7, 19132).is_err());
+        fs::remove_file(&tcp).unwrap();
+        assert!(inspect_listener(&root, 7, 19132).is_err());
+        assert!(
+            owns_listener(0, 19132)
+                .unwrap_err()
+                .is::<ObservationError>()
+        );
+    }
     #[test]
     fn notifications() {
         assert_eq!(
