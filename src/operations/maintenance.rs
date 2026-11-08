@@ -146,8 +146,9 @@ fn maintenance_locked(
                 releases::activate(c, &release.id)?;
             }
             if let Err(error) = start(c) {
-                candidate_failed_startup =
-                    candidate.is_some() && !error.is::<crate::supervisor::PreparationError>();
+                candidate_failed_startup = candidate.is_some()
+                    && !error.is::<crate::supervisor::PreparationError>()
+                    && !error.is::<crate::supervisor::ObservationError>();
                 return Err(error);
             }
             if candidate.is_some() {

@@ -83,10 +83,15 @@ pub fn running(c: &Config) -> bool {
 }
 /// Failure to inspect the kernel is a manager fault, not evidence of a dead BDS.
 #[derive(Debug)]
-pub struct ObservationError(anyhow::Error);
+pub struct ObservationError(pub(crate) anyhow::Error);
+impl ObservationError {
+    fn new(error: anyhow::Error) -> Self {
+        Self(error.context("起動確認処理の異常（自動再試行を停止）"))
+    }
+}
 impl std::fmt::Display for ObservationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "起動確認処理の異常（自動再試行を停止）: {:#}", self.0)
+        write!(f, "{:#}", self.0)
     }
 }
 impl std::error::Error for ObservationError {}
@@ -104,11 +109,11 @@ impl std::error::Error for PreparationError {}
 #[cfg(target_os = "linux")]
 pub fn owns_listener(pid: u32, port: u16) -> Result<bool> {
     inspect_listener(std::path::Path::new("/proc"), pid, port)
-        .map_err(|e| ObservationError(e).into())
+        .map_err(|e| ObservationError::new(e).into())
 }
 #[cfg(not(target_os = "linux"))]
 pub fn owns_listener(_: u32, _: u16) -> Result<bool> {
-    Err(ObservationError(anyhow::anyhow!("TCP待受の確認はLinux専用です")).into())
+    Err(ObservationError::new(anyhow::anyhow!("TCP待受の確認はLinux専用です")).into())
 }
 fn nonblocking(fd: i32) -> Result<()> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };

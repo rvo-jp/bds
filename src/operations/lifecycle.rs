@@ -112,7 +112,12 @@ fn start_wait(c: &Config) -> Result<()> {
             let recorded = supervisor::status(c)
                 .ok()
                 .filter(|s| !s.invocation.is_empty() && previous.as_ref() != Some(&s.invocation));
-            if recorded.as_ref().is_some_and(|s| s.pid > 0) {
+            if let Some(s) = recorded.as_ref().filter(|s| s.pid > 0) {
+                if util::prop(&c.server.unit, "ExecMainStatus")? == "78" {
+                    return Err(
+                        supervisor::ObservationError(anyhow::anyhow!(s.reason.clone())).into(),
+                    );
+                }
                 bail!("BDSを起動できません。診断記録を確認してください")
             }
             let reason = recorded

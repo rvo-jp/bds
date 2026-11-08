@@ -299,7 +299,14 @@ allowed_users = ["3333333333333333333"]
         assert status()['invocation']==invocation and backup_ids()==existing
         assert json.loads((root/'store/state/rejected-release.json').read_text())['id']=='1.2.3.5'
         check('hourly checks never retry a rejected release or interrupt the recovered server')
-        cache_release('1.2.3.6','no-console');result=updating('1.2.3.6',ok=False)
+        cache_release('1.2.3.6','uninspectable');result=updating('1.2.3.6',ok=False)
+        assert result.returncode and status()['ready'] and os.readlink(root/'releases/current')=='1.2.3.4'
+        assert json.loads((root/'store/state/rejected-release.json').read_text())['id']=='1.2.3.5'
+        assert json.loads((root/'store/state/pending-release.json').read_text())['id']=='1.2.3.6'
+        check('manager observation failure does not reject a candidate whose BDS readiness cannot be assessed')
+        (root/'releases/1.2.3.6/mode').write_text('no-console')
+        (root/'store/engine/1.2.3.6/mode').write_text('no-console')
+        result=updating('1.2.3.6',ok=False)
         assert result.returncode and status()['ready'] and os.readlink(root/'releases/current')=='1.2.3.4'
         assert (data/'worlds/data').read_text()=='original-world'
         check('startup still requires console response and rolls back a listening but unresponsive candidate')
