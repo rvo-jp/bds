@@ -110,7 +110,7 @@ allowed_users = ["3333333333333333333"]
         commands_before=(data/'worlds/commands.log').read_bytes()
         with socket.socket() as occupied:
             occupied.bind(('127.0.0.1',server_port));occupied.listen()
-            run('systemctl','reset-failed',unit)
+            run('systemctl','reset-failed',unit,ok=False)
             assert run('systemctl','start',unit,ok=False).returncode
             time.sleep(1.2)
             assert run('systemctl','show',unit,'-p','ExecMainStatus','--value').stdout.strip()=='78'
@@ -154,7 +154,7 @@ allowed_users = ["3333333333333333333"]
         check('stop during TCP preparation cancels without BDS execution, false save records or world commands')
         server_port=port()
         (data/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n')
-        run('systemctl','reset-failed',unit);run('systemctl','start',unit)
+        run('systemctl','reset-failed',unit,ok=False);run('systemctl','start',unit)
         assert status()['ready'] and status()['phase']=='running'
         # Neither recovery entry point may mutate a running BDS release.
         invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
