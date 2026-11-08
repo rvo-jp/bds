@@ -531,6 +531,12 @@ pub fn run(c: &Config) -> Result<()> {
                 }
                 publish(c, &mut s)?;
                 return if s.stopped {
+                    // The notifier thread is detached on exit; await this final message here.
+                    if let Err(error) =
+                        util::webhook(&c.paths.webhook_file, "サーバーが停止しました。")
+                    {
+                        eprintln!("Discordの停止通知に失敗しました: {error:#}");
+                    }
                     Ok(())
                 } else {
                     Err(startup_error
