@@ -662,3 +662,94 @@ fn failed_execution_copy_is_not_published_and_can_be_rebuilt() {
             .is_dir()
     );
 }
+
+#[test]
+fn server_identity_survives_release_changes_engine_rebuilds_and_backup_restore() {
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    use ring::{rand::SystemRandom, signature};
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    fs::create_dir_all(f.c.data()).unwrap();
+    for id in ["1.2.3.4", "1.2.3.5"] {
+        let vendor = f.c.paths.releases.join(id);
+        fs::create_dir(&vendor).unwrap();
+        fs::write(vendor.join("bedrock_server"), "fixture").unwrap();
+        fs::write(vendor.join("release.json"), "{}").unwrap();
+        releases::prepare(&f.c, id).unwrap();
+    }
+    let key = f.c.data().join("keys/server_identity_key.pem");
+    let original = fs::read_to_string(&key).unwrap();
+    let der = STANDARD
+        .decode(
+            original
+                .lines()
+                .filter(|s| !s.starts_with("-----"))
+                .collect::<String>(),
+        )
+        .unwrap();
+    signature::EcdsaKeyPair::from_pkcs8(
+        &signature::ECDSA_P384_SHA384_ASN1_SIGNING,
+        &der,
+        &SystemRandom::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(key.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    for id in ["1.2.3.4", "1.2.3.5"] {
+        let work = releases::working(&f.c, id);
+        assert_eq!(
+            fs::read_link(work.join("keys")).unwrap(),
+            f.c.data().join("keys")
+        );
+        assert_eq!(
+            fs::read_to_string(work.join("keys/server_identity_key.pem")).unwrap(),
+            original
+        );
+        fs::remove_dir_all(work).unwrap();
+        releases::prepare(&f.c, id).unwrap();
+        assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    }
+    let snapshot = snapshots::capture(&f.c, "1.2.3.5").unwrap();
+    assert!(snapshot.files.contains_key("keys/server_identity_key.pem"));
+    let restored = snapshots::prepare_restore(&f.c, &snapshot.id).unwrap();
+    let restored_key = restored.join("keys/server_identity_key.pem");
+    assert_eq!(fs::read_to_string(&restored_key).unwrap(), original);
+    assert_ne!(
+        fs::metadata(&key).unwrap().ino(),
+        fs::metadata(restored_key).unwrap().ino()
+    );
+    // An existing engine-local identity is moved, never discarded or replaced.
+    let work = releases::working(&f.c, "1.2.3.5");
+    fs::remove_file(work.join("keys")).unwrap();
+    fs::rename(f.c.data().join("keys"), work.join("keys")).unwrap();
+    releases::prepare(&f.c, "1.2.3.5").unwrap();
+    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    assert_eq!(
+        fs::read_link(work.join("keys")).unwrap(),
+        f.c.data().join("keys")
+    );
+    fs::remove_file(work.join("keys")).unwrap();
+    fs::create_dir(work.join("keys")).unwrap();
+    fs::write(work.join("keys/server_identity_key.pem"), "conflicting key").unwrap();
+    assert!(releases::prepare(&f.c, "1.2.3.5").is_err());
+    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    fs::remove_dir_all(work.join("keys")).unwrap();
+    fs::create_dir(work.join("keys")).unwrap();
+    releases::prepare(&f.c, "1.2.3.5").unwrap();
+    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    // Invalid existing storage must not cause an automatic key replacement.
+    fs::write(&key, "").unwrap();
+    assert!(releases::prepare(&f.c, "1.2.3.5").is_err());
+    assert_eq!(fs::read(&key).unwrap(), b"");
+}

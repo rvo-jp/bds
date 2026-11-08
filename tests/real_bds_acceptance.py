@@ -5,8 +5,8 @@ No production units, worlds, ports or Discord endpoints are used.
 """
 import hashlib,json,os,pathlib,pwd,shutil,subprocess,sys,tempfile,uuid,zipfile
 
-VERSION='1.26.61.1'
-ZIP_SHA256='b54095267d55fd401de42f71ac4daf2c1747a49515ad41810781f1f9bafde26e'
+VERSION='1.26.63.1'
+ZIP_SHA256='b40b04c8f5a7c42a19ee685c22fc593e66116b9c22741b8c75489306b252ff62'
 
 def run(*args,ok=True,timeout=120):
     p=subprocess.run([str(x) for x in args],capture_output=True,text=True,timeout=timeout)
@@ -59,6 +59,9 @@ minimum_free_mib=0
         text=text.replace('[Service]','[Service]\nPrivateNetwork=yes')
         unitfile.write_text(text);run('systemctl','daemon-reload')
         work=root/'store/engine'/VERSION
+        key=data/'keys/server_identity_key.pem'
+        def public_key():return run('openssl','pkey','-in',key,'-pubout').stdout
+        identity=None
         for attempt in range(3):
             run('systemctl','start',unit)
             status=json.loads((root/'runtime/status.json').read_text());assert status['ready'] and not status['failed']
@@ -66,6 +69,13 @@ minimum_free_mib=0
             assert (work/'Dedicated_Server.txt').is_file()
             assert run('runuser','-u',user,'--','test','-w',work).returncode==0
             assert run('runuser','-u',user,'--','test','-w',vendor/'bedrock_server',ok=False).returncode!=0
+            assert (work/'keys').resolve()==data/'keys'
+            assert key.stat().st_mode & 0o777==0o600
+            assert run('runuser','-u',user,'--','test','-r',key).returncode==0
+            identity=identity or public_key()
+            assert public_key()==identity
+            # Saving the running key proves BDS loaded our key instead of generating another.
+            ctl('console','serveridentity save')
             ctl('console','list')
             if attempt==0:
                 (work/'cache-probe').write_text('retained')
@@ -73,13 +83,19 @@ minimum_free_mib=0
                 assert json.loads((root/'runtime/status.json').read_text())['ready']
                 ids=[p.name for p in (root/'store/backups').iterdir() if not p.name.startswith('.')]
                 assert len(ids)==1;ctl('verify',ids[0])
+                assert public_key()==identity
+                assert public_key()==run('openssl','pkey','-in',root/'store/backups'/ids[0]/'data/keys/server_identity_key.pem','-pubout').stdout
             assert (work/'cache-probe').read_text()=='retained'
             run('systemctl','stop',unit)
             assert json.loads((root/'runtime/status.json').read_text())['stopped']
+            logs=run('journalctl','_SYSTEMD_INVOCATION_ID='+status['invocation'],'--no-pager','-o','cat').stdout
+            assert 'Saved server identity key to ' in logs
+            assert 'Invalid server identity key file' not in logs
+            assert public_key()==identity
             # Statistics output is optional without client traffic; caches can flush on exit.
             for name in ['Dedicated_Server.txt','minecraftpe','premium_cache','treatments']:
                 assert (work/name).exists(),name
-            print(f'PASS real BDS cycle {attempt+1}: writable engine state, ready, normal exit',flush=True)
+            print(f'PASS real BDS cycle {attempt+1}: writable engine state, stable P-384 identity, normal exit',flush=True)
         for rel,digest in vendor_files.items():assert hashlib.file_digest((vendor/rel).open('rb'),'sha256').hexdigest()==digest,rel
         assert {str(p.relative_to(vendor)) for p in vendor.rglob('*') if p.is_file()}==set(vendor_files)
         assert not any(p.is_symlink() for p in vendor.rglob('*'))

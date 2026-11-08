@@ -15,6 +15,7 @@ pub const MUTABLE: &[&str] = &[
     "server.properties",
     "permissions.json",
     "allowlist.json",
+    "keys",
     "config",
     "development_behavior_packs",
     "development_resource_packs",
@@ -320,6 +321,7 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
         final_work.clone()
     };
     directory(&work)?;
+    crate::identity::adopt(&c.data(), &work)?;
     for name in MUTABLE {
         let source = c.data().join(name);
         if !source.exists() {
@@ -379,6 +381,7 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
             symlink(e.path(), dest)?;
         }
     }
+    crate::identity::prepare(&c.data())?;
     util::sync_dirs(&work)?;
     if let Some(cleanup) = unpublished {
         fs::rename(&work, &final_work)?;

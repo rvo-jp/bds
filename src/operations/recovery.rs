@@ -137,6 +137,9 @@ fn own_working(c: &Config, id: &str) -> Result<()> {
                 .chain(releases::PACKS)
                 .map(|name| c.data().join(name)),
         )
+        .chain(std::iter::once(
+            c.data().join("keys").join(crate::identity::KEY),
+        ))
         .collect();
     for path in &paths {
         args.push(path.to_str().context("データのパスが不正です")?);
