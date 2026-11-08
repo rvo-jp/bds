@@ -712,19 +712,16 @@ fn server_identity_survives_release_changes_engine_rebuilds_and_backup_restore()
             fs::read_link(work.join("keys")).unwrap(),
             f.c.data().join("keys")
         );
-        assert_eq!(
-            fs::read_to_string(work.join("keys/server_identity_key.pem")).unwrap(),
-            original
-        );
+        assert!(fs::read_to_string(work.join("keys/server_identity_key.pem")).unwrap() == original);
         fs::remove_dir_all(work).unwrap();
         releases::prepare(&f.c, id).unwrap();
-        assert_eq!(fs::read_to_string(&key).unwrap(), original);
+        assert!(fs::read_to_string(&key).unwrap() == original);
     }
     let snapshot = snapshots::capture(&f.c, "1.2.3.5").unwrap();
     assert!(snapshot.files.contains_key("keys/server_identity_key.pem"));
     let restored = snapshots::prepare_restore(&f.c, &snapshot.id).unwrap();
     let restored_key = restored.join("keys/server_identity_key.pem");
-    assert_eq!(fs::read_to_string(&restored_key).unwrap(), original);
+    assert!(fs::read_to_string(&restored_key).unwrap() == original);
     assert_ne!(
         fs::metadata(&key).unwrap().ino(),
         fs::metadata(restored_key).unwrap().ino()
@@ -734,7 +731,7 @@ fn server_identity_survives_release_changes_engine_rebuilds_and_backup_restore()
     fs::remove_file(work.join("keys")).unwrap();
     fs::rename(f.c.data().join("keys"), work.join("keys")).unwrap();
     releases::prepare(&f.c, "1.2.3.5").unwrap();
-    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    assert!(fs::read_to_string(&key).unwrap() == original);
     assert_eq!(
         fs::read_link(work.join("keys")).unwrap(),
         f.c.data().join("keys")
@@ -743,11 +740,11 @@ fn server_identity_survives_release_changes_engine_rebuilds_and_backup_restore()
     fs::create_dir(work.join("keys")).unwrap();
     fs::write(work.join("keys/server_identity_key.pem"), "conflicting key").unwrap();
     assert!(releases::prepare(&f.c, "1.2.3.5").is_err());
-    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    assert!(fs::read_to_string(&key).unwrap() == original);
     fs::remove_dir_all(work.join("keys")).unwrap();
     fs::create_dir(work.join("keys")).unwrap();
     releases::prepare(&f.c, "1.2.3.5").unwrap();
-    assert_eq!(fs::read_to_string(&key).unwrap(), original);
+    assert!(fs::read_to_string(&key).unwrap() == original);
     // Invalid existing storage must not cause an automatic key replacement.
     fs::write(&key, "").unwrap();
     assert!(releases::prepare(&f.c, "1.2.3.5").is_err());
