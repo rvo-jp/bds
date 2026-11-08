@@ -41,6 +41,7 @@ impl Default for Paths {
 pub struct Server {
     pub user: String,
     pub unit: String,
+    pub port_wait_seconds: u64,
     pub startup_seconds: u64,
     pub stable_seconds: u64,
     pub response_seconds: u64,
@@ -52,6 +53,7 @@ impl Default for Server {
         Self {
             user: "bds".into(),
             unit: "bds.service".into(),
+            port_wait_seconds: 90,
             startup_seconds: 120,
             stable_seconds: 15,
             response_seconds: 10,
@@ -167,6 +169,10 @@ impl Config {
         ensure!(
             (1..=300).contains(&self.server.startup_seconds) && self.server.stable_seconds <= 60,
             "起動確認の秒数が範囲外です"
+        );
+        ensure!(
+            (1..=300).contains(&self.server.port_wait_seconds),
+            "TCPポートの解放待ちは1〜300秒にしてください"
         );
         ensure!(
             (1..=60).contains(&self.server.response_seconds),

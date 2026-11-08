@@ -10,7 +10,8 @@ pub fn units(c: &Config, binary: &Path, config: &Path) -> Result<BTreeMap<String
     crate::config::valid_absolute(config)?;
     let exec = format!("{} --config {}", quote(binary), quote(config));
     let mut out = BTreeMap::new();
-    let startup = c.server.startup_seconds + c.server.stable_seconds + 15;
+    let startup =
+        c.server.port_wait_seconds + c.server.startup_seconds + c.server.stable_seconds + 15;
     let interval = 600.max((startup + c.server.restart_seconds) * c.server.start_limit as u64 + 60);
     out.insert(
         c.server.unit.clone(),

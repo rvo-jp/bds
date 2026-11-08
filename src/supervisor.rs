@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use crate::tcp::inspect_listener;
 use crate::{
     config::{Config, port},
     signals::Signals,
@@ -13,9 +15,20 @@ use std::{
         io::AsRawFd,
         net::{UnixDatagram, UnixListener, UnixStream},
     },
+    path::Path,
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
+
+crate::model::text_enum! {
+    pub enum Phase {
+        Preparing => "preparing",
+        Starting => "starting",
+        Running => "running",
+        Stopping => "stopping",
+        Stopped => "stopped",
+    }
+}
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Status {
     pub invocation: String,
@@ -28,6 +41,8 @@ pub struct Status {
     pub changed_at: u64,
     pub port: u16,
     pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<Phase>,
 }
 pub fn notify(text: &str) -> Result<()> {
     if let Ok(path) = std::env::var("NOTIFY_SOCKET") {
@@ -76,52 +91,20 @@ impl std::fmt::Display for ObservationError {
 }
 impl std::error::Error for ObservationError {}
 
+/// Do not restart BDS to repair a failed pre-launch condition.
+#[derive(Debug)]
+pub struct PreparationError(pub(crate) anyhow::Error);
+impl std::fmt::Display for PreparationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:#}", self.0)
+    }
+}
+impl std::error::Error for PreparationError {}
+
 #[cfg(target_os = "linux")]
 pub fn owns_listener(pid: u32, port: u16) -> Result<bool> {
     inspect_listener(std::path::Path::new("/proc"), pid, port)
         .map_err(|e| ObservationError(e).into())
-}
-#[cfg(target_os = "linux")]
-fn inspect_listener(proc: &std::path::Path, pid: u32, port: u16) -> Result<bool> {
-    let root = proc.join(pid.to_string());
-    let mut sockets = std::collections::HashSet::new();
-    for e in fs::read_dir(root.join("fd")).context("BDSのFD一覧を読めません")? {
-        let e = e?;
-        let path = match fs::read_link(e.path()) {
-            Ok(path) => path,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue, // Concurrent close.
-            Err(e) => return Err(e).context("BDSのFDを確認できません"),
-        };
-        let text = path.to_string_lossy();
-        if let Some(inode) = text
-            .strip_prefix("socket:[")
-            .and_then(|s| s.strip_suffix(']'))
-        {
-            sockets.insert(inode.to_string());
-        }
-    }
-    let mut found = false;
-    for kind in ["tcp", "tcp6"] {
-        let text = match fs::read_to_string(root.join("net").join(kind)) {
-            Ok(text) => text,
-            Err(e) if kind == "tcp6" && e.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(e) => return Err(e).context("TCP待受表を読めません"),
-        };
-        ensure!(
-            text.lines()
-                .next()
-                .is_some_and(|l| l.contains("local_address")),
-            "TCP待受表の形式が不正です"
-        );
-        for line in text.lines().skip(1).filter(|l| !l.trim().is_empty()) {
-            let f: Vec<_> = line.split_whitespace().collect();
-            ensure!(f.len() > 9, "TCP待受表の行が不正です");
-            let local = f[1].split_once(':').context("TCPアドレスが不正です")?;
-            let bound = u16::from_str_radix(local.1, 16).context("TCPポートが不正です")?;
-            found |= f[3] == "0A" && bound == port && sockets.contains(f[9]);
-        }
-    }
-    Ok(found)
 }
 #[cfg(not(target_os = "linux"))]
 pub fn owns_listener(_: u32, _: u16) -> Result<bool> {
@@ -371,6 +354,88 @@ fn failure(c: &Config, s: &mut Status, reason: &str, logs: &VecDeque<String>) ->
     eprintln!("BDS異常: {reason}");
     Ok(())
 }
+fn await_port(c: &Config, port: u16, signals: &mut Signals) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(c.server.port_wait_seconds);
+    let mut announced = false;
+    loop {
+        if signals.receive()? {
+            return Ok(false);
+        }
+        match crate::tcp::availability(port)? {
+            crate::tcp::Availability::Available => return Ok(true),
+            crate::tcp::Availability::Closing => {
+                if !announced {
+                    eprintln!("TCP {port}: 終了待ちの接続が解消するまでBDSの起動を保留します");
+                    notify("STATUS=TCPポートの終了待ち接続が解消するのを待機中（BDS未起動）")?;
+                    announced = true;
+                }
+            }
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "TCP {port} の終了待ち接続が{}秒以内に解消しませんでした",
+            c.server.port_wait_seconds
+        );
+        wait(
+            &mut [libc::pollfd {
+                fd: signals.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            }],
+            Some(deadline.min(Instant::now() + Duration::from_secs(1))),
+        )?;
+    }
+}
+
+struct Launched {
+    child: Child,
+    listener: UnixListener,
+    output: UnixStream,
+}
+
+fn launch(
+    c: &Config,
+    p: u16,
+    vendor: &Path,
+    work: &Path,
+    signals: &mut Signals,
+) -> Result<Option<Launched>> {
+    let executable = vendor.join("bedrock_server");
+    ensure!(executable.is_file(), "BDS本体がありません");
+    if !await_port(c, p, signals)? {
+        return Ok(None);
+    }
+    if c.socket().exists() {
+        let _ = fs::remove_file(c.socket());
+    }
+    let listener = UnixListener::bind(c.socket())?;
+    util::chmod(&c.socket(), 0o600)?;
+    listener.set_nonblocking(true)?;
+    // Keep stderr in the same bounded event stream as stdout, including startup errors.
+    let (output, child_output) = UnixStream::pair()?;
+    let mut command = Command::new(&executable);
+    command
+        .current_dir(work)
+        .env("LD_LIBRARY_PATH", vendor)
+        .env("HOME", work)
+        .env_remove("NOTIFY_SOCKET")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::from(std::os::fd::OwnedFd::from(
+            child_output.try_clone()?,
+        )))
+        .stderr(Stdio::from(std::os::fd::OwnedFd::from(child_output)));
+    signals.configure_child(&mut command);
+    if signals.receive()? {
+        return Ok(None);
+    }
+    notify("STATUS=BDS起動・受付確認中")?;
+    Ok(Some(Launched {
+        child: command.spawn()?,
+        listener,
+        output,
+    }))
+}
+
 pub fn run(c: &Config) -> Result<()> {
     ensure!(cfg!(target_os = "linux"), "BDS監督はLinux専用です");
     let mut signals = Signals::new()?;
@@ -380,39 +445,48 @@ pub fn run(c: &Config) -> Result<()> {
     let release = crate::releases::current(c)?;
     let vendor = c.paths.releases.join(&release);
     let work = crate::releases::working(c, &release);
-    let executable = vendor.join("bedrock_server");
-    ensure!(executable.is_file(), "BDS本体がありません");
     let recovered = status(c).map(|s| s.failed).unwrap_or(false);
-    if c.socket().exists() {
-        let _ = fs::remove_file(c.socket());
-    }
-    let listener = UnixListener::bind(c.socket())?;
-    util::chmod(&c.socket(), 0o600)?;
-    listener.set_nonblocking(true)?;
     let notifications = crate::notifications::Notifier::new(c.paths.webhook_file.clone())?;
-    // Keep stderr in the same bounded event stream as stdout, including startup errors.
-    let (mut output, child_output) = UnixStream::pair()?;
-    let mut command = Command::new(&executable);
-    command
-        .current_dir(&work)
-        .env("LD_LIBRARY_PATH", &vendor)
-        .env("HOME", &work)
-        .env_remove("NOTIFY_SOCKET")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::from(std::os::fd::OwnedFd::from(
-            child_output.try_clone()?,
-        )))
-        .stderr(Stdio::from(std::os::fd::OwnedFd::from(child_output)));
-    signals.configure_child(&mut command);
-    let mut child = command.spawn()?;
-    drop(command);
     let mut s = Status {
         invocation: std::env::var("INVOCATION_ID").unwrap_or_default(),
         boot: util::boot(),
-        pid: child.id(),
         port: p,
+        phase: Some(Phase::Preparing),
         ..Status::default()
     };
+    publish(c, &mut s)?;
+    let Launched {
+        mut child,
+        listener,
+        mut output,
+    } = match launch(c, p, &vendor, &work, &mut signals) {
+        Ok(Some(launched)) => launched,
+        Ok(None) => {
+            let _ = fs::remove_file(c.socket());
+            s.stopped = true;
+            s.phase = Some(Phase::Stopped);
+            s.reason = "BDS起動前に停止要求を受けたため、起動を取り消しました".into();
+            let _ = notify("STOPPING=1\nSTATUS=BDS起動前の停止要求により起動を取消");
+            let outcome = publish(c, &mut s);
+            notifications.finish(None);
+            return outcome;
+        }
+        Err(error) => {
+            let _ = fs::remove_file(c.socket());
+            let error: anyhow::Error =
+                PreparationError(error.context("起動準備の異常（BDS未起動、自動再試行を停止）"))
+                    .into();
+            let recorded = failure(c, &mut s, &format!("{error:#}"), &VecDeque::new());
+            notifications.send("Minecraftの起動準備に失敗しました。BDSは起動していません。ポートの占有状態と診断記録を確認してください。".into());
+            if let Err(record_error) = recorded {
+                eprintln!("起動準備の診断記録を保存できません: {record_error:#}");
+            }
+            notifications.finish(None);
+            return Err(error);
+        }
+    };
+    s.pid = child.id();
+    s.phase = Some(Phase::Starting);
     let mut startup = Startup::new(c);
     let mut stopping = false;
     let mut stop_requested = false;
@@ -430,6 +504,7 @@ pub fn run(c: &Config) -> Result<()> {
             if stop_requested && !stopping {
                 stopping = true;
                 s.ready = false;
+                s.phase = Some(Phase::Stopping);
                 enqueue(&mut queue, "stop")?;
                 publish(c, &mut s)?;
                 let _ = notify("STOPPING=1\nSTATUS=正常停止中");
@@ -514,6 +589,9 @@ pub fn run(c: &Config) -> Result<()> {
                 s.ready = false;
                 s.child_exit = exit.code();
                 s.stopped = stopping && !s.failed && exit.success();
+                if s.stopped {
+                    s.phase = Some(Phase::Stopped);
+                }
                 if !stopping {
                     failure(c, &mut s, "BDSが予期せず終了しました", &logs)?;
                 }
@@ -533,6 +611,7 @@ pub fn run(c: &Config) -> Result<()> {
                 match startup.check(c, child.id(), &mut queue) {
                     Ok(true) => {
                         s.ready = true;
+                        s.phase = Some(Phase::Running);
                         publish(c, &mut s)?;
                         notify("READY=1\nSTATUS=起動・TCP受付・コンソール応答を確認済み")?;
                         notifications.send(
@@ -626,6 +705,19 @@ pub fn run(c: &Config) -> Result<()> {
 mod tests {
     use super::*;
     use std::sync::mpsc;
+    #[test]
+    fn old_status_without_phase_is_readable_but_unknown_phase_is_rejected() {
+        let mut value = serde_json::to_value(Status::default()).unwrap();
+        assert!(value.get("phase").is_none());
+        assert!(
+            serde_json::from_value::<Status>(value.clone())
+                .unwrap()
+                .phase
+                .is_none()
+        );
+        value["phase"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<Status>(value).is_err());
+    }
     #[cfg(target_os = "linux")]
     #[test]
     fn unavailable_or_invalid_proc_is_not_an_absent_listener() {

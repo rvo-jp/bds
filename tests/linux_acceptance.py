@@ -55,6 +55,7 @@ webhook_file = "{root}/disabled-webhook"
 [server]
 user = "{user}"
 unit = "{unit}"
+port_wait_seconds = 2
 startup_seconds = 3
 stable_seconds = 1
 response_seconds = 1
@@ -103,6 +104,58 @@ allowed_users = ["3333333333333333333"]
         assert status()['ready'];run('systemctl','stop',unit);(work/'mode').unlink()
         run('systemctl','start',unit);assert status()['ready']
         check('inspection permission failure stops cleanly without retries, and stderr startup logs are captured')
+        # Startup preparation is distinct from a child startup failure. Never
+        # launch/retry BDS against another listener or a closing TCP connection.
+        run('systemctl','stop',unit)
+        commands_before=(data/'worlds/commands.log').read_bytes()
+        with socket.socket() as occupied:
+            occupied.bind(('127.0.0.1',server_port));occupied.listen()
+            run('systemctl','reset-failed',unit)
+            assert run('systemctl','start',unit,ok=False).returncode
+            time.sleep(1.2)
+            assert run('systemctl','show',unit,'-p','ExecMainStatus','--value').stdout.strip()=='78'
+            assert run('systemctl','show',unit,'-p','NRestarts','--value').stdout.strip()=='0'
+            assert status()['phase']=='preparing' and status()['failed'] and status()['pid']==0
+            assert '別の待受' in status()['reason']
+        check('foreign TCP listener rejects preparation without launching or restarting BDS')
+        with socket.socket() as previous:
+            previous.bind(('127.0.0.1',server_port));previous.listen()
+            with socket.create_connection(('127.0.0.1',server_port)) as client:
+                accepted,_=previous.accept()
+                with accepted:
+                    accepted.shutdown(socket.SHUT_WR)
+                    assert client.recv(1)==b''
+                    client.shutdown(socket.SHUT_WR)
+                    assert accepted.recv(1)==b''
+        run('systemctl','reset-failed',unit)
+        assert run('systemctl','start',unit,ok=False).returncode
+        time.sleep(1.2)
+        assert status()['phase']=='preparing' and status()['failed'] and status()['pid']==0
+        assert '2秒以内' in status()['reason']
+        assert run('systemctl','show',unit,'-p','ExecMainStatus','--value').stdout.strip()=='78'
+        assert run('systemctl','show',unit,'-p','NRestarts','--value').stdout.strip()=='0'
+        check('closing TCP connections have a bounded preparation deadline and do not consume BDS retries')
+        # SIGTERM during preparation must cancel without spawning a child or
+        # claiming a BDS save/exit that never took place.
+        run('systemctl','reset-failed',unit)
+        invocation=status()['invocation'];run('systemctl','start','--no-block',unit)
+        until=time.monotonic()+5
+        while time.monotonic()<until:
+            current=status()
+            if current['invocation']!=invocation and current['phase']=='preparing':break
+            time.sleep(.01)
+        assert current['invocation']!=invocation and current['phase']=='preparing'
+        run('systemctl','stop',unit)
+        assert status()['phase']=='stopped' and status()['stopped'] and not status()['failed']
+        assert status()['pid']==0 and status()['child_exit'] is None
+        assert run('systemctl','show',unit,'-p','ExecMainStatus','--value').stdout.strip()=='0'
+        assert (data/'worlds/commands.log').read_bytes()==commands_before
+        assert ctl('backup',ok=False).returncode
+        check('stop during TCP preparation cancels without BDS execution, false save records or world commands')
+        server_port=port()
+        (data/'server.properties').write_text(f'transport=nethernet\nserver-port={server_port}\n')
+        run('systemctl','reset-failed',unit);run('systemctl','start',unit)
+        assert status()['ready'] and status()['phase']=='running'
         # Neither recovery entry point may mutate a running BDS release.
         invocation=status()['invocation'];commands=(data/'worlds/commands.log').read_bytes()
         def release_links():return {str(p):p.lstat().st_ino for p in release.rglob('*') if p.is_symlink()}
@@ -234,6 +287,13 @@ allowed_users = ["3333333333333333333"]
         assert json.loads((root/'store/state/pending-release.json').read_text())['id']=='1.2.3.5'
         (bad/'world_templates').unlink()
         check('execution-copy preparation failure restores service and keeps the candidate retryable')
+        (bad/'bedrock_server').chmod(0o644)
+        result=updating('1.2.3.5',ok=False)
+        assert result.returncode and status()['ready'] and os.readlink(root/'releases/current')=='1.2.3.4'
+        assert not (root/'store/state/rejected-release.json').exists()
+        assert json.loads((root/'store/state/pending-release.json').read_text())['id']=='1.2.3.5'
+        (bad/'bedrock_server').chmod(0o755)
+        check('pre-launch failure restores the old service without rejecting an unexecuted update candidate')
         result=updating('1.2.3.5',ok=False);assert result.returncode!=0,result.stdout;assert os.readlink(root/'releases/current')=='1.2.3.4';assert status()['ready'];assert (root/'store/state/rejected-release.json').is_file();assert (data/'worlds/data').read_text()=='original-world';check('failed update rolls back world and executable after bounded retries')
         invocation=status()['invocation'];existing=backup_ids();updating('1.2.3.5')
         assert status()['invocation']==invocation and backup_ids()==existing

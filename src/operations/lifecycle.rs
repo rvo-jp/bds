@@ -90,10 +90,15 @@ pub fn start(c: &Config) -> Result<()> {
 
 fn start_wait(c: &Config) -> Result<()> {
     // systemctl waits for recovery too; only BDS retries use the deadline below.
+    let previous = supervisor::status(c).ok().map(|s| s.invocation);
     let _ = util::systemctl(&["start", &c.server.unit]);
     let deadline = Instant::now()
         + Duration::from_secs(
-            (c.server.startup_seconds + c.server.stable_seconds + 60 + c.server.restart_seconds)
+            (c.server.port_wait_seconds
+                + c.server.startup_seconds
+                + c.server.stable_seconds
+                + 60
+                + c.server.restart_seconds)
                 * c.server.start_limit as u64
                 + 30,
         );
@@ -104,7 +109,19 @@ fn start_wait(c: &Config) -> Result<()> {
             return Ok(());
         }
         if matches!(state.as_str(), "inactive" | "failed") {
-            bail!("BDSを起動できません。診断記録を確認してください")
+            let recorded = supervisor::status(c)
+                .ok()
+                .filter(|s| !s.invocation.is_empty() && previous.as_ref() != Some(&s.invocation));
+            if recorded.as_ref().is_some_and(|s| s.pid > 0) {
+                bail!("BDSを起動できません。診断記録を確認してください")
+            }
+            let reason = recorded
+                .map(|s| s.reason)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    "BDSの起動準備を完了できません。サービス状態と診断記録を確認してください".into()
+                });
+            return Err(supervisor::PreparationError(anyhow::anyhow!(reason)).into());
         }
         std::thread::sleep(Duration::from_millis(500));
     }

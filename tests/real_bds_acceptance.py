@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Exercise the official BDS in a disposable systemd unit with PrivateNetwork=yes.
+"""Exercise official BDS in a disposable unit and persistent isolated network namespace.
 Usage (root): python3 tests/real_bds_acceptance.py BDSCTL OFFICIAL_ZIP
 No production units, worlds, ports or Discord endpoints are used.
 """
-import hashlib,json,os,pathlib,pwd,shutil,subprocess,sys,tempfile,uuid,zipfile
+import hashlib,json,os,pathlib,pwd,shutil,subprocess,sys,tempfile,time,uuid,zipfile
 
 VERSION='1.26.63.1'
 ZIP_SHA256='b40b04c8f5a7c42a19ee685c22fc593e66116b9c22741b8c75489306b252ff62'
@@ -20,9 +20,11 @@ def main():
     root=pathlib.Path(tempfile.mkdtemp(prefix='bds-real-',dir='/var/lib'));root.chmod(0o755)
     binary=root/'bdsctl';shutil.copy2(source,binary)
     user='bds-real-'+uuid.uuid4().hex[:8];unit=user+'.service';unitfile=pathlib.Path('/run/systemd/system')/unit
-    created=False
+    created=False;network_created=False
     try:
         run('useradd','--system','--user-group','--no-create-home','--shell','/usr/sbin/nologin',user);created=True;account=pwd.getpwnam(user)
+        run('ip','netns','add',user);network_created=True
+        run('ip','-n',user,'link','set','lo','up')
         vendor=root/'releases'/VERSION;vendor.mkdir(parents=True)
         # Only the pinned, digest-verified official archive reaches extractall.
         with zipfile.ZipFile(archive) as z:z.extractall(vendor)
@@ -56,7 +58,9 @@ minimum_free_mib=0
         ctl('generate-units',root/'units',binary)
         text=(root/'units'/unit).read_text()
         text='\n'.join(l for l in text.splitlines() if not l.startswith(('RuntimeDirectory','StateDirectory','OnFailure=')))+'\n'
-        text=text.replace('[Service]','[Service]\nPrivateNetwork=yes')
+        # Keep the same private namespace across restarts: recreating it would
+        # erase TIME_WAIT and hide the production restart failure.
+        text=text.replace('[Service]',f'[Service]\nNetworkNamespacePath=/run/netns/{user}')
         unitfile.write_text(text);run('systemctl','daemon-reload')
         work=root/'store/engine'/VERSION
         key=data/'keys/server_identity_key.pem'
@@ -96,6 +100,44 @@ minimum_free_mib=0
             for name in ['Dedicated_Server.txt','minecraftpe','premium_cache','treatments']:
                 assert (work/name).exists(),name
             print(f'PASS real BDS cycle {attempt+1}: writable engine state, stable P-384 identity, normal exit',flush=True)
+        # An HTTP connection makes BDS actively close TCP. Its TIME_WAIT remains
+        # after the old process exits, and BDS itself cannot rebind immediately.
+        run('systemctl','start',unit)
+        run('ip','netns','exec',user,sys.executable,'-c','''import socket
+with socket.create_connection(('127.0.0.1',29132),timeout=5) as client:
+ client.sendall(b'GET /v1/join HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n')
+ while client.recv(65536):pass
+''')
+        run('systemctl','stop',unit)
+        time_wait=run('ip','netns','exec',user,'ss','-Hant','state','time-wait','sport = :29132').stdout
+        assert time_wait,'fixture must retain server-side TIME_WAIT after BDS exit'
+        previous=json.loads((root/'runtime/status.json').read_text())['invocation']
+        start_job=subprocess.Popen(['systemctl','start',unit],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        try:
+            until=time.monotonic()+15
+            while time.monotonic()<until:
+                current=json.loads((root/'runtime/status.json').read_text())
+                if current['invocation']!=previous and current.get('phase')=='preparing':break
+                time.sleep(.05)
+            assert current['invocation']!=previous and current['phase']=='preparing'
+            assert current['pid']==0 and not current['ready'] and not current['failed']
+            run('systemctl','stop',unit)
+            start_job.communicate(timeout=15)
+            cancelled=json.loads((root/'runtime/status.json').read_text())
+            assert cancelled['phase']=='stopped' and cancelled['pid']==0 and cancelled['child_exit'] is None
+        finally:
+            if start_job.poll() is None:
+                run('systemctl','stop',unit,ok=False);start_job.communicate(timeout=15)
+        run('systemctl','start',unit)
+        current=json.loads((root/'runtime/status.json').read_text())
+        assert current['ready'] and current['phase']=='running' and not current['failed']
+        assert run('systemctl','show',unit,'-p','NRestarts','--value').stdout.strip()=='0'
+        logs=run('journalctl','_SYSTEMD_INVOCATION_ID='+current['invocation'],'--no-pager','-o','cat').stdout
+        assert '終了待ちの接続が解消するまでBDSの起動を保留します' in logs
+        assert logs.count('Starting Server')==1 and 'BDS異常' not in logs
+        assert public_key()==identity
+        run('systemctl','stop',unit)
+        print('PASS real BDS waits for TCP reuse before launch, cancels pending launch, and restarts without failure/recovery',flush=True)
         for rel,digest in vendor_files.items():assert hashlib.file_digest((vendor/rel).open('rb'),'sha256').hexdigest()==digest,rel
         assert {str(p.relative_to(vendor)) for p in vendor.rglob('*') if p.is_file()}==set(vendor_files)
         assert not any(p.is_symlink() for p in vendor.rglob('*'))
@@ -107,6 +149,7 @@ minimum_free_mib=0
         run('systemctl','stop',unit,ok=False)
         unitfile.unlink(missing_ok=True);run('systemctl','daemon-reload',ok=False);run('systemctl','reset-failed',unit,ok=False)
         if created:run('userdel',user)
+        if network_created:run('ip','netns','del',user,ok=False)
         shutil.rmtree(root)
 
 if __name__=='__main__':main()

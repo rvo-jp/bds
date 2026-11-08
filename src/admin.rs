@@ -128,6 +128,16 @@ pub fn status(c: &Config) -> Result<()> {
         "バージョン: {}",
         releases::current(c).unwrap_or_else(|_| "未設定".into())
     );
+    if let Ok(s) = supervisor::status(c)
+        && s.invocation == util::prop(&c.server.unit, "InvocationID")?
+    {
+        if let Some(phase) = s.phase {
+            println!("監督の段階: {phase}");
+        }
+        if !s.reason.is_empty() {
+            println!("監督の記録: {}", s.reason);
+        }
+    }
     if in_maintenance(c) {
         let m: MaintenanceMode = MODE.load(c)?;
         println!(

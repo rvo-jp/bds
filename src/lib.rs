@@ -13,6 +13,7 @@ mod http;
 mod identity;
 mod notifications;
 mod signals;
+mod tcp;
 
 mod model;
 mod state;
