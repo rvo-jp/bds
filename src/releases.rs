@@ -283,6 +283,40 @@ fn directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn file_bytes(root: &Path, files: &[PathBuf]) -> Result<u64> {
+    files.iter().try_fold(0u64, |n, p| {
+        n.checked_add(fs::metadata(root.join(p))?.len())
+            .context("実行領域のサイズが不正です")
+    })
+}
+
+/// Existing execution copies are reused; each missing version is counted once.
+pub(crate) fn execution_copies_bytes(c: &Config, ids: &[&str]) -> Result<u64> {
+    let mut bytes = 0u64;
+    for id in ids
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        identifier(id)?;
+        let needed = match fs::symlink_metadata(working(c, id)) {
+            Ok(m) => {
+                ensure!(m.is_dir(), "実行領域が不正です");
+                0
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let release = c.paths.releases.join(id);
+                file_bytes(&release, &vendor_files(&release)?)?
+            }
+            Err(e) => return Err(e.into()),
+        };
+        bytes = bytes
+            .checked_add(needed)
+            .context("実行領域が大きすぎます")?;
+    }
+    Ok(bytes)
+}
+
 pub fn prepare(c: &Config, id: &str) -> Result<()> {
     identifier(id)?;
     util::files(&c.data())?;
@@ -301,11 +335,7 @@ pub fn prepare(c: &Config, id: &str) -> Result<()> {
         .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
     {
         let files = vendor_files(&release)?;
-        let bytes = files.iter().try_fold(0u64, |n, p| -> Result<u64> {
-            n.checked_add(fs::metadata(release.join(p))?.len())
-                .context("実行領域のサイズが不正です")
-        })?;
-        util::reserve(c, bytes)?;
+        util::reserve(c, file_bytes(&release, &files)?)?;
         let stage = c.paths.store.join(format!(".engine-{}", util::nonce()?));
         fs::create_dir(&stage)?;
         let cleanup = util::CleanupDir(stage.clone());

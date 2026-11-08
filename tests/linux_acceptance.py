@@ -227,6 +227,13 @@ allowed_users = ["3333333333333333333"]
         ctl('verify',sid);ctl('export',sid,root/'snapshot.tar.zst');run('zstd','-t',root/'snapshot.tar.zst');check('snapshot verifies and exports through one zstd process')
         (data/'worlds/data').write_text('changed');ctl('restore',sid);assert (data/'worlds/data').read_text()=='original-world';assert status()['ready'];check('restore copies independent world and restarts successfully')
         bad=cache_release('1.2.3.5','no-listener')
+        (bad/'world_templates').write_text('invalid directory')
+        result=updating('1.2.3.5',ok=False)
+        assert result.returncode and status()['ready'] and os.readlink(root/'releases/current')=='1.2.3.4'
+        assert not (root/'store/state/rejected-release.json').exists()
+        assert json.loads((root/'store/state/pending-release.json').read_text())['id']=='1.2.3.5'
+        (bad/'world_templates').unlink()
+        check('execution-copy preparation failure restores service and keeps the candidate retryable')
         result=updating('1.2.3.5',ok=False);assert result.returncode!=0,result.stdout;assert os.readlink(root/'releases/current')=='1.2.3.4';assert status()['ready'];assert (root/'store/state/rejected-release.json').is_file();assert (data/'worlds/data').read_text()=='original-world';check('failed update rolls back world and executable after bounded retries')
         invocation=status()['invocation'];existing=backup_ids();updating('1.2.3.5')
         assert status()['invocation']==invocation and backup_ids()==existing

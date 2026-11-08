@@ -81,6 +81,8 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
         sum.checked_add(f.bytes).context("サイズが不正です")
     })?;
     let current_bytes = util::estimate_tree_bytes(&c.data())?;
+    let current = releases::current(c)?;
+    let copies = releases::execution_copies_bytes(c, &[&current, &target.release])?;
     util::reserve(
         c,
         target_bytes
@@ -89,6 +91,7 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
                     .checked_mul(2)
                     .context("必要容量が大きすぎます")?,
             )
+            .and_then(|n| n.checked_add(copies))
             .context("必要容量が大きすぎます")?,
     )?;
     let prepared = snapshots::prepare_restore(c, id)?;
@@ -102,10 +105,12 @@ pub fn restore(c: &Config, id: &str) -> Result<()> {
         } else {
             ensure_stopped(c)?;
         }
+        let copies = releases::execution_copies_bytes(c, &[&current, &target.release])?;
         util::reserve(
             c,
             util::tree_bytes(&c.data())?
                 .checked_mul(2)
+                .and_then(|n| n.checked_add(copies))
                 .context("必要容量が大きすぎます")?,
         )?;
         let safety = snapshots::capture_reason(c, &tx.old_release, snapshots::Reason::Safety)?;

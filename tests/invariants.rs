@@ -34,6 +34,22 @@ impl Fixture {
         }
         Self { root, c }
     }
+
+    fn cache_release(&self, id: &str, bytes: u64) -> releases::Release {
+        let dir = self.c.paths.releases.join(id);
+        fs::create_dir(&dir).unwrap();
+        fs::File::create(dir.join("bedrock_server"))
+            .unwrap()
+            .set_len(bytes)
+            .unwrap();
+        let release = releases::Release {
+            id: id.into(),
+            url: "fixture".into(),
+            sha256: "fixture".into(),
+        };
+        util::json(&dir.join("release.json"), &release, 0o644).unwrap();
+        release
+    }
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -361,6 +377,8 @@ fn preflight_rejects_missing_candidate_and_insufficient_space_without_changes() 
     let mut f = Fixture::new();
     fs::create_dir_all(f.c.data()).unwrap();
     fs::write(f.c.data().join("world"), "data").unwrap();
+    f.cache_release("1.2.3.4", 16);
+    releases::activate(&f.c, "1.2.3.4").unwrap();
     let r = releases::Release {
         id: "1.2.3.5".into(),
         url: "fixture".into(),
@@ -413,6 +431,8 @@ fn live_capacity_estimate_tolerates_leveldb_file_replacement() {
         atomic::{AtomicBool, Ordering},
     };
     let f = Fixture::new();
+    f.cache_release("1.2.3.4", 16);
+    releases::activate(&f.c, "1.2.3.4").unwrap();
     let db = f.c.data().join("worlds/db");
     fs::create_dir_all(&db).unwrap();
     fs::write(db.join("stable.ldb"), b"stable-data").unwrap();
@@ -442,6 +462,43 @@ fn live_capacity_estimate_tolerates_leveldb_file_replacement() {
     symlink("/etc/passwd", db.join("invalid-link")).unwrap();
     assert!(util::estimate_tree_bytes(&f.c.data()).is_err());
     assert!(util::files(&f.c.data()).is_err());
+}
+
+#[test]
+fn capacity_includes_missing_execution_copies_once_and_reuses_existing_versions() {
+    let mut f = Fixture::new();
+    fs::create_dir_all(f.c.data().join("worlds")).unwrap();
+    fs::write(f.c.data().join("worlds/data"), "live-world").unwrap();
+    let old = f.cache_release("1.2.3.4", 16 * 1048576);
+    let new = f.cache_release("1.2.3.5", 16 * 1048576);
+    releases::activate(&f.c, &old.id).unwrap();
+    let budget = |c: &mut Config, mib| {
+        c.maintenance.minimum_free_mib = util::free(&c.paths.store).unwrap() / 1048576 - mib;
+    };
+    budget(&mut f.c, 24);
+    // 24 MiB can fit either version, but cannot fit both missing execution copies.
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&new)).is_err());
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&old)).is_ok());
+    assert!(!f.c.paths.store.join("engine").exists());
+    assert!(!f.c.state().join("transaction.json").exists());
+    assert!(!f.c.state().join("rejected-release.json").exists());
+    f.c.maintenance.minimum_free_mib = 0;
+    releases::prepare(&f.c, &old.id).unwrap();
+    budget(&mut f.c, 24);
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&new)).is_ok());
+    budget(&mut f.c, 8);
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&new)).is_err());
+    f.c.maintenance.minimum_free_mib = 0;
+    releases::prepare(&f.c, &new.id).unwrap();
+    budget(&mut f.c, 8);
+    assert!(bdsctl::operations::capacity_preflight(&f.c, Some(&new)).is_ok());
+    fs::remove_dir_all(releases::working(&f.c, &old.id)).unwrap();
+    budget(&mut f.c, 8);
+    assert!(bdsctl::operations::capacity_preflight(&f.c, None).is_err());
+    assert_eq!(
+        fs::read_to_string(f.c.data().join("worlds/data")).unwrap(),
+        "live-world"
+    );
 }
 
 #[test]

@@ -119,18 +119,12 @@ fn maintenance_locked(
         },
     )?;
     let mut tx = new_transaction(c, TransactionKind::Maintenance, was_active)?;
+    let mut candidate_failed_startup = false;
     let result = (|| {
         if was_active {
             stop(c)?;
         }
-        if candidate.is_some() {
-            util::reserve(
-                c,
-                util::tree_bytes(&c.data())?
-                    .checked_mul(2)
-                    .context("必要容量が大きすぎます")?,
-            )?;
-        }
+        reserve_maintenance(c, candidate.as_ref(), util::tree_bytes(&c.data())?)?;
         let snapshot = snapshots::capture_reason(c, &tx.old_release, reason)?;
         tx.snapshot = Some(snapshot.id.clone());
         tx.phase = TransactionPhase::Copied;
@@ -146,12 +140,15 @@ fn maintenance_locked(
                         .is_file(),
                     "更新候補がありません"
                 );
+                releases::prepare(c, &release.id)?;
                 tx.phase = TransactionPhase::Applying;
                 TRANSACTION.save(c, &tx)?;
-                releases::prepare(c, &release.id)?;
                 releases::activate(c, &release.id)?;
             }
-            start(c)?;
+            if let Err(error) = start(c) {
+                candidate_failed_startup = candidate.is_some();
+                return Err(error);
+            }
             if candidate.is_some() {
                 PENDING_RELEASE.remove(c)?;
             }
@@ -191,10 +188,12 @@ fn maintenance_locked(
         }
         Err(error) => {
             let failure = if tx.phase == TransactionPhase::Applying {
-                if let Some(ref rejected) = candidate {
+                if let Some(ref rejected) = candidate.filter(|_| candidate_failed_startup) {
                     let _ = REJECTED_RELEASE.save(c, rejected);
                 }
-                let _ = PENDING_RELEASE.remove(c);
+                if candidate_failed_startup {
+                    let _ = PENDING_RELEASE.remove(c);
+                }
                 rollback(c, &tx)
             } else {
                 tx.phase = TransactionPhase::Copied;
@@ -233,11 +232,25 @@ pub fn capacity_preflight(c: &Config, candidate: Option<&releases::Release>) -> 
             "更新候補が不完全です"
         );
     }
-    let bytes = util::estimate_tree_bytes(&c.data())?;
+    reserve_maintenance(c, candidate, util::estimate_tree_bytes(&c.data())?)
+}
+
+fn reserve_maintenance(
+    c: &Config,
+    candidate: Option<&releases::Release>,
+    bytes: u64,
+) -> Result<()> {
+    let current = releases::current(c)?;
+    let mut versions = vec![current.as_str()];
+    if let Some(release) = candidate {
+        versions.push(&release.id);
+    }
+    let copies = releases::execution_copies_bytes(c, &versions)?;
     util::reserve(
         c,
         bytes
             .checked_mul(if candidate.is_some() { 2 } else { 1 })
+            .and_then(|n| n.checked_add(copies))
             .context("必要容量が大きすぎます")?,
     )
 }

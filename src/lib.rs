@@ -11,6 +11,7 @@ pub mod util;
 
 mod http;
 mod identity;
+mod notifications;
 mod signals;
 
 mod model;

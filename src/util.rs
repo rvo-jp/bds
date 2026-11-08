@@ -212,14 +212,22 @@ pub fn copy_tree(source: &Path, dest: &Path) -> Result<()> {
 }
 
 pub fn https_agent(seconds: u64) -> ureq::Agent {
+    https_agent_for(Duration::from_secs(seconds))
+}
+
+fn https_agent_for(timeout: Duration) -> ureq::Agent {
     ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .https_only(true)
-            .timeout_global(Some(Duration::from_secs(seconds)))
+            .timeout_global(Some(timeout))
             .build(),
     )
 }
 pub fn webhook(path: &Path, text: &str) -> Result<()> {
+    webhook_until(path, text, Instant::now() + Duration::from_secs(17))
+}
+
+pub(crate) fn webhook_until(path: &Path, text: &str, deadline: Instant) -> Result<()> {
     let url = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -235,14 +243,23 @@ pub fn webhook(path: &Path, text: &str) -> Result<()> {
         "Webhook URLが不正です"
     );
     for n in 0..3 {
-        let result = https_agent(5)
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let agent = https_agent_for(remaining.min(Duration::from_secs(5)));
+        let result = agent
             .post(url)
             .send_json(serde_json::json!({"content":text,"allowed_mentions":{"parse":[]}}));
         if result.is_ok() {
             return Ok(());
         }
         if n < 2 {
-            std::thread::sleep(Duration::from_secs(1));
+            std::thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_secs(1)),
+            );
         }
     }
     bail!("Discord通知に失敗しました")

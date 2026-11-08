@@ -237,6 +237,7 @@ pub fn deployment_check(c: &Config) -> Result<()> {
         "自動配布は標準の保存先・サービス名専用です"
     );
     operations::ensure_no_interruption(c)?;
-    releases::current(c)?;
+    let current = releases::current(c)?;
+    util::reserve(c, releases::execution_copies_bytes(c, &[&current])?)?;
     Ok(())
 }

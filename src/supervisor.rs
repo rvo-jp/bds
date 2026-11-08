@@ -14,7 +14,6 @@ use std::{
         net::{UnixDatagram, UnixListener, UnixStream},
     },
     process::{Child, Command, Stdio},
-    sync::mpsc,
     time::{Duration, Instant},
 };
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -390,18 +389,7 @@ pub fn run(c: &Config) -> Result<()> {
     let listener = UnixListener::bind(c.socket())?;
     util::chmod(&c.socket(), 0o600)?;
     listener.set_nonblocking(true)?;
-    let (tx, rx) = mpsc::sync_channel::<String>(64);
-    let webhook = c.paths.webhook_file.clone();
-    let network = std::thread::Builder::new()
-        .name("notifier".into())
-        .stack_size(256 * 1024)
-        .spawn(move || {
-            while let Ok(text) = rx.recv() {
-                if util::webhook(&webhook, &text).is_err() {
-                    eprintln!("Discord通知に失敗しました（サーバー操作は継続します）");
-                }
-            }
-        })?;
+    let notifications = crate::notifications::Notifier::new(c.paths.webhook_file.clone())?;
     // Keep stderr in the same bounded event stream as stdout, including startup errors.
     let (mut output, child_output) = UnixStream::pair()?;
     let mut command = Command::new(&executable);
@@ -509,7 +497,7 @@ pub fn run(c: &Config) -> Result<()> {
                                     startup.log(&line);
                                 }
                                 if let Some(event) = player(&line) {
-                                    let _ = tx.try_send(event);
+                                    notifications.send(event);
                                 }
                             }
                             if buffer.len() > 65536 {
@@ -531,12 +519,6 @@ pub fn run(c: &Config) -> Result<()> {
                 }
                 publish(c, &mut s)?;
                 return if s.stopped {
-                    // The notifier thread is detached on exit; await this final message here.
-                    if let Err(error) =
-                        util::webhook(&c.paths.webhook_file, "サーバーが停止しました。")
-                    {
-                        eprintln!("Discordの停止通知に失敗しました: {error:#}");
-                    }
                     Ok(())
                 } else {
                     Err(startup_error
@@ -553,7 +535,7 @@ pub fn run(c: &Config) -> Result<()> {
                         s.ready = true;
                         publish(c, &mut s)?;
                         notify("READY=1\nSTATUS=起動・TCP受付・コンソール応答を確認済み")?;
-                        let _ = tx.try_send(
+                        notifications.send(
                             if recovered {
                                 "Minecraftサーバーが自動復旧しました。"
                             } else {
@@ -572,7 +554,7 @@ pub fn run(c: &Config) -> Result<()> {
                             error
                         };
                         failure(c, &mut s, &format!("{error:#}"), &logs)?;
-                        let _ = tx.try_send(if error.is::<ObservationError>() {
+                        notifications.send(if error.is::<ObservationError>() {
                             "管理側の起動確認処理に失敗しました。Minecraftを正常停止し、自動再試行を中止します。".into()
                         } else {
                             "Minecraftの起動確認に失敗しました。正常停止後に制限内で復旧を試みます。".into()
@@ -637,13 +619,13 @@ pub fn run(c: &Config) -> Result<()> {
         let _ = publish(c, &mut s);
     }
     let _ = fs::remove_file(c.socket());
-    drop(tx);
-    drop(network);
+    notifications.finish((outcome.is_ok() && s.stopped).then(|| "サーバーが停止しました。".into()));
     outcome
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     #[cfg(target_os = "linux")]
     #[test]
     fn unavailable_or_invalid_proc_is_not_an_absent_listener() {
