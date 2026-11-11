@@ -1,0 +1,26 @@
+#!/usr/sbin/nft -f
+# Copy to /etc/ufw/bds-ipban.nft (root:root, 0600).
+# This is the only persistent IP list. Replace documentation addresses locally.
+# This batch replaces only its own table; never use 'flush ruleset' here.
+define minecraft_port = 19132
+
+destroy table inet bds_ipban
+table inet bds_ipban {
+    set blocked_v4 {
+        type ipv4_addr
+        elements = { 192.0.2.10, 192.0.2.20 }
+    }
+    set blocked_v6 {
+        type ipv6_addr
+    }
+    chain input {
+        type filter hook input priority -10; policy accept;
+        meta l4proto { tcp, udp } th dport $minecraft_port ip saddr @blocked_v4 counter drop
+        meta l4proto { tcp, udp } th dport $minecraft_port ip6 saddr @blocked_v6 counter drop
+    }
+    chain output {
+        type filter hook output priority -10; policy accept;
+        meta l4proto { tcp, udp } th sport $minecraft_port ip daddr @blocked_v4 counter drop
+        meta l4proto { tcp, udp } th sport $minecraft_port ip6 daddr @blocked_v6 counter drop
+    }
+}

@@ -25,6 +25,8 @@ LinuxのMinecraft Bedrock Dedicated Serverを管理するRust製の単一実行�
 
 `bds.service`が一般ユーザー`bds`でBDSと監督プロセスを起動します。`bds-discord.service`は別ユーザーでHTTP要求を受け付けます。Discord受付がrootで実行できるのは、固定された2つの操作サービスの開始だけです。
 
+MinecraftのIPBANを行う場合はVPSのファイアウォールで管理します。正本・追加解除・起動時の適用・確認方法は[IPBANの運用手順](docs/firewall.md)を参照してください。実際の対象IPはGitに含めません。
+
 ## 毎日の動作
 
 日本時間04:30に、ゲーム内へ60秒前・10秒前の予告を送り、BDSを正常停止します。今回起動したBDSの終了コード0と、サービス内のプロセスが残っていないことを確認してからバックアップします。停止できない場合はコピーや強制終了を行いません。
