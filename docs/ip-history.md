@@ -31,22 +31,41 @@ sudo journalctl --disk-usage
 
 既存UFWとnftablesを使います。`destroy table`に対応したnftが必要です。独立した`nftables.service`は有効化せず、`flush ruleset`は使いません。手元のチェックアウトから設定ファイルだけをVPSの一時領域へ転送し、以下の転送元パスを置き換えます。既存ファイルを確認してから設定例を配置し、構文確認します。VPSへソース一式を置く必要はありません。
 
+rootのシェルで、正本と同じファイルシステム上に候補を作り、検証成功後だけ`mv`で置き換えます。次は設置・変更時に共通の手順です。途中で失敗した場合は正本を更新せず終了します。既存のポートなどを保った候補を用意してください。
+
 ```sh
-sudo install -o root -g root -m 600 deploy/ufw-ip-history.nft.example /etc/ufw/bds-ip-history.nft
-sudo nft --check --file /etc/ufw/bds-ip-history.nft
-sudo install -o root -g root -m 644 deploy/rsyslog-bds-ip-history.conf /etc/rsyslog.d/19-bds-ip-history.conf
-sudo rsyslogd -N1
-sudo systemctl restart rsyslog
-sudo nft --file /etc/ufw/bds-ip-history.nft
+sudo sh -eu <<'SH'
+history_candidate=
+filter_candidate=
+validation_config=
+trap 'rm -f "$history_candidate" "$filter_candidate" "$validation_config"' EXIT
+trap 'exit 1' HUP INT TERM
+history_candidate=$(mktemp /etc/ufw/.bds-ip-history.XXXXXX)
+filter_candidate=$(mktemp /etc/rsyslog.d/.bds-ip-history.XXXXXX)
+validation_config=$(mktemp /etc/rsyslog.d/.bds-ip-history-validation.XXXXXX)
+install -o root -g root -m 600 deploy/ufw-ip-history.nft.example "$history_candidate"
+install -o root -g root -m 644 deploy/rsyslog-bds-ip-history.conf "$filter_candidate"
+nft --check --file "$history_candidate"
+# This filter has no named objects. Validate it together with existing config;
+# the real destination orders it before file-output rules.
+printf 'include(file="/etc/rsyslog.conf")\ninclude(file="%s")\n' "$filter_candidate" > "$validation_config"
+rsyslogd -N1 -f "$validation_config"
+mv -fT "$filter_candidate" /etc/rsyslog.d/19-bds-ip-history.conf
+mv -fT "$history_candidate" /etc/ufw/bds-ip-history.nft
+systemctl restart rsyslog
+nft --file /etc/ufw/bds-ip-history.nft
+SH
 ```
+
+隠し名の候補は既存の`*.conf`一括読み込みに含めません。rsyslogの候補と検証用設定は、AppArmorが読み取りを許可する`/etc/rsyslog.d`内へ置きます。保護設定を緩めません。このフィルターは名前付きオブジェクトを追加しないため、既存設定と合わせて追加検証できます。稼働ルールもnftのバッチで原子的に交換します。カーネル資源不足やサービス起動障害まで、複数ファイルとサービスをまとめてロールバックする手順ではありません。適用後はrsyslogの稼働と実際のjournal保存・重複ファイルがないことを確認し、障害時はjournalの診断を調べます。
 
 rsyslogの再起動はフィルターを読み込むためです。journaldやMinecraftは停止しません。rsyslogを使用しない環境では専用フィルターは不要ですが、他の転送・ログ出力があれば重複保存の有無を確認します。
 
-既存の`/etc/ufw/before.init`（root所有・750）の内容を保ち、`start)`にIPBANの読み込みと並べて次を追加します。UFWがOS起動時に有効であることを確認します。
+起動フックは[IPBANの起動・再読込手順](firewall.md#起動再読込)へ統一します。既存の`/etc/ufw/after.init`へ[独自表の起動フック断片](../deploy/ufw-bds.after-init.sh)を反映し、`before.init`に古い呼び出しがあれば外します。断片を実行する別ファイルへ依存させず、内容を起動フックへ反映します。通常UFWを復元する前のエラーで処理を中断させない構成です。
 
-```sh
-/usr/sbin/nft --file /etc/ufw/bds-ip-history.nft
-```
+IPBANを導入せず観測だけを使う環境では、断片の必須IPBAN読込1行を省き、観測用のif〜fiを配置します。IPBANを利用中に設定が欠損した場合は、この省略で隠さず原因を解消してください。
+
+観測設定の欠損・構文エラーなどでは、既存の観測表を維持し、標準エラーと`bds-ip-history`タグのjournalへ診断を残して通常UFWの起動を継続します。初回起動で表がない場合は観測なしで継続します。診断のsyslog送信自体が失敗しても継続します。必須のIPBAN読み込みは失敗を隠さず、同じ扱いにしません。
 
 OS起動・`ufw reload`で再適用されます。`stop`では表を削除しません。**`ufw disable`・`systemctl stop ufw`だけでは観測もIPBANも止まりません。** 変更時は上記の`nft --check`に成功してから`nft --file`で適用します。専用表だけを原子的に交換するので、入力エラーでは旧表を維持します。再適用・OS再起動で重複抑制の集合とカウンターはリセットされ、次の通信が新たに記録されます。永続履歴は消えません。
 
@@ -63,11 +82,11 @@ sudo nft list table inet bds_ip_history
 
 `candidates`は重複を除いた観測候補、`rate_limited`は頻度制限で記録を省略したパケット、`set_add_failed`は集合への追加失敗、`log_attempted`はカーネルへのログ出力を試みた回数です。カウンターはパケット数であり、人数・ユニークIP数ではありません。`log_attempted`もjournalへの保存成功数を保証しません。集合は現在オンラインの一覧でも、永続履歴でもありません。
 
-候補を調べる場合は時間帯を狭め、IP履歴の時刻とBDSの参加ログを並べて確認します。5分間の重複抑制中の再接続は新規記録されない点を考慮してください。journalは管理権限で読み取り、一般プレイヤーや公開サービスへ提供しません。
+候補を調べる場合は参加時刻の少なくとも5分前からの履歴を含め、IP履歴の時刻とBDSの参加ログを並べて確認します。5分間の重複抑制中の再接続は新規記録されない点を考慮してください。journalは管理権限で読み取り、一般プレイヤーや公開サービスへ提供しません。
 
 ## 無効化・削除
 
-観測を停止するには、UFW起動フックから**観測用の1行だけ**を外し、`sudo nft destroy table inet bds_ip_history`を実行します。IPBAN表と通常UFWは変更しません。撤去する場合は観測設定を削除し、rsyslogフィルターも削除して`rsyslogd -N1`・rsyslog再起動を行います。
+観測を停止するには、`after.init`の起動フック断片から**任意の観測部分（if〜fi）だけ**を外し、`sudo nft destroy table inet bds_ip_history`を実行します。必須のIPBAN読込・IPBAN表・通常UFWは変更しません。撤去する場合は観測設定を削除し、rsyslogフィルターも削除して`rsyslogd -N1`・rsyslog再起動を行います。
 
 既存の履歴はjournalの通常ローテーションまで残ります。journalはメッセージ単位の削除に対応しないため、IP履歴だけを選択削除する手順は設けません。IP履歴を消す目的でjournal全体をvacuumすると、BDSや他サービスの診断記録も消えるため使用しません。手動の書き出しファイルは管理者が不要になった時点で削除します。
 
@@ -77,8 +96,11 @@ Linux root環境で、設定をホストのネットワークへ適用しない�
 
 ```sh
 sudo python3 tests/ip_history_acceptance.py deploy/ufw-ip-history.nft.example deploy/ufw-ipban.nft.example
+sudo python3 tests/ip_history_integration.py
 ```
 
 IPv4/IPv6・TCP/UDPの記録対象、重複抑制、期限の非延長、頻度制限・集合満杯でも通信が通ること、BANの維持、原子的な再適用と撤去を確認します。ホスト名前空間での内部実行とPythonの最適化モードを拒否します。隔離試験はカウンターで出力条件を検証し、本番反映後に実際のjournalへの保存と重複ファイルがないことを別に確認します。
+
+統合試験はUFWの実装から再読込関数を読み、本物のネットワーク操作を模擬コマンドへ置き換えて失敗経路を確認します。rsyslogは一時設定・専用ソケット・一時出力先だけを使う別プロセスで検証し、稼働サービスを変更しません。試験にはUFWとrsyslogも必要です。
 
 仕様の根拠は[nftマニュアル](https://netfilter.org/projects/nftables/manpage.html)と[journaldの保存設定](https://www.freedesktop.org/software/systemd/man/latest/journald.conf.html)です。

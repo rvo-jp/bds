@@ -1,6 +1,6 @@
 # MinecraftのIPBAN
 
-IPによる拒否はVPSのカーネルで実施します。BDSやDiscord受付にBAN処理や常駐監視を追加しません。通常のポート許可は既存UFW、MinecraftのIPBANはUFW起動時に読み込む専用のnftables表`inet bds_ipban`が担当します。独立した`nftables.service`は起動しません。
+IPによる拒否はVPSのカーネルで実施します。BDSやDiscord受付にBAN処理や常駐監視を追加しません。通常のポート許可は既存UFW、MinecraftのIPBANはUFW適用後のフックで読み込む専用のnftables表`inet bds_ipban`が担当します。独立した`nftables.service`は起動しません。
 
 通信元IPの観測は別の表と設定で行います。保存条件と手動照合の制約は[IP履歴の運用手順](ip-history.md)を参照してください。観測表を削除してもIPBANは解除されません。
 
@@ -23,11 +23,9 @@ sudo nft --file /etc/ufw/bds-ipban.nft
 
 ファイルを一つのバッチとして読み込み、専用表だけを原子的に入れ替えます。入力エラーでは稼働中の表を残します。適用時に表のカウンターはリセットされます。通常のUFWルールや他の表を消す`flush ruleset`は使いません。
 
-既存の`/etc/ufw/before.init`の内容を保ち、`start)`内に次の処理を追加して、ファイルをroot所有・750で実行可能にします。
+既存の`/etc/ufw/after.init`の内容と`set -e`を保ち、`start)`内に[独自表の起動フック断片](../deploy/ufw-bds.after-init.sh)の内容を追加します。ファイルはroot所有・750で実行可能にし、変更候補を`sh -n`で検証してから原子的に配置します。`before.init`に独自表の読込がある場合は、フック断片の配置と確認後に古い呼び出しだけを外します。`before.init`・`after.init`の両方から重複して読み込ませません。断片の先頭が必須IPBAN、後半が任意のIP履歴です。IP履歴を導入しない環境では任意の後半を省きます。
 
-```sh
-/usr/sbin/nft --file /etc/ufw/bds-ipban.nft
-```
+UFWの通常ルール適用後に独自表を読み込むことで、設定の読込失敗で通常UFWのルールが停止状態に取り残されることを防ぎます。パケットの処理順は表の優先度で決まるため、IPBANの-10は通常UFWの0より先に評価されます。IPBANの読込失敗はUFWへエラーとして返し、任意のIP履歴の失敗は診断を残して継続します。入力エラーでは以前の専用表を維持しますが、初回OS起動でIPBAN表がない場合にBANを代替する仕組みではありません。UFWエラー時は専用表の有無と集合を確認してください。
 
 UFWがOS起動時に有効であることを確認します。これで起動・`ufw reload`時に正本を再適用します。再読込途中の`stop`では専用表を削除せず、遮断の空白を作りません。**`ufw disable`・`systemctl stop ufw`だけではIPBANは解除しません。** BAN解除は集合から対象IPを削除して同じファイルを適用します。全件解除は両集合を空にします。サービス全体を撤去する場合だけ、起動フックを外して`sudo nft destroy table inet bds_ipban`を実行し、正本を削除します。
 
@@ -35,10 +33,17 @@ UFWがOS起動時に有効であることを確認します。これで起動・
 
 ## 確認と追加・解除
 
+正本を直接編集せず、同じディレクトリに作ったroot専用の候補を編集します。編集・構文確認に成功した場合だけ原子的に正本を置き換え、そのファイルを適用します。編集の取消や検証失敗では正本を変更しません。
+
 ```sh
-sudoedit /etc/ufw/bds-ipban.nft
-sudo nft --check --file /etc/ufw/bds-ipban.nft
-sudo nft --file /etc/ufw/bds-ipban.nft
+candidate=$(sudo mktemp /etc/ufw/.bds-ipban.XXXXXX)
+if sudo cp /etc/ufw/bds-ipban.nft "$candidate" &&
+   sudoedit "$candidate" &&
+   sudo nft --check --file "$candidate"; then
+    sudo mv -fT "$candidate" /etc/ufw/bds-ipban.nft &&
+        sudo nft --file /etc/ufw/bds-ipban.nft
+fi
+sudo rm -f "$candidate"
 sudo nft list table inet bds_ipban
 sudo ufw status numbered
 ```
