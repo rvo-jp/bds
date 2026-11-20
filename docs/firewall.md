@@ -2,6 +2,8 @@
 
 IPによる拒否はVPSのカーネルで実施します。BDSやDiscord受付にBAN処理や常駐監視を追加しません。通常のポート許可は既存UFW、MinecraftのIPBANはUFW起動時に読み込む専用のnftables表`inet bds_ipban`が担当します。独立した`nftables.service`は起動しません。
 
+通信元IPの観測は別の表と設定で行います。保存条件と手動照合の制約は[IP履歴の運用手順](ip-history.md)を参照してください。観測表を削除してもIPBANは解除されません。
+
 ## 正本と適用範囲
 
 BAN対象の正本はVPSの`/etc/ufw/bds-ipban.nft`（root所有・600）だけです。実際の対象IPやプレイヤー名をGitへ記載しません。[設定例](../deploy/ufw-ipban.nft.example)には文書用アドレスを使っています。

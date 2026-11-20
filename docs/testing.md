@@ -2,6 +2,8 @@
 
 Rustテスト、静的検査、模擬BDSと公式BDSによるLinux/systemd隔離試験をCIで実行します。結果はコミットごとのCIと配布成果物で確認します。過去の結果をソースディレクトリへ蓄積しません。
 
+VPSのファイアウォールとIP履歴は管理プログラムと独立しています。[IPBAN](firewall.md#検証)・[IP履歴](ip-history.md#検証)の隔離試験もCIで実施し、実際のログ保存は反映後に確認します。
+
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings

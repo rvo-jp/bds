@@ -1,0 +1,44 @@
+#!/usr/sbin/nft -f
+# Copy to /etc/ufw/bds-ip-history.nft (root:root, 0600).
+# Observation only: never accept/drop game traffic or change the IPBAN table.
+define minecraft_port = 19132
+
+destroy table inet bds_ip_history
+table inet bds_ip_history {
+    set seen_v4 {
+        type ipv4_addr . inet_proto
+        flags dynamic,timeout
+        timeout 5m
+        gc-interval 1m
+        size 4096
+    }
+    set seen_v6 {
+        type ipv6_addr . inet_proto
+        flags dynamic,timeout
+        timeout 5m
+        gc-interval 1m
+        size 4096
+    }
+    counter candidates { }
+    counter rate_limited { }
+    counter log_attempted { }
+    counter set_add_failed { }
+
+    chain input {
+        type filter hook input priority -20; policy accept;
+        iifname "lo" return
+        meta l4proto { tcp, udp } th dport $minecraft_port jump observe
+    }
+    chain observe {
+        ip saddr . meta l4proto @seen_v4 return
+        ip6 saddr . meta l4proto @seen_v6 return
+        counter name candidates
+        # One shared budget across both address families and protocols.
+        limit rate over 5/second burst 50 packets counter name rate_limited return
+        # 'add' keeps the first-observation expiry; duplicates do not refresh it.
+        meta nfproto ipv4 add @seen_v4 { ip saddr . meta l4proto } counter name log_attempted log prefix "[BDS-IP] " level info return
+        meta nfproto ipv6 add @seen_v6 { ip6 saddr . meta l4proto } counter name log_attempted log prefix "[BDS-IP] " level info return
+        # Set exhaustion skips logging, never blocks the packet.
+        counter name set_add_failed
+    }
+}
