@@ -10,7 +10,6 @@ use std::{
 };
 
 const CAPACITY: usize = 64;
-const MESSAGE_TIMEOUT: Duration = Duration::from_secs(17);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(20);
 const FINAL_RESERVE: Duration = Duration::from_secs(5);
 
@@ -41,6 +40,9 @@ impl Notifier {
         drain: Duration,
         reserve: Duration,
     ) -> Result<Self> {
+        anyhow::ensure!(reserve <= drain, "停止通知の予約時間が終了待ちを超えます");
+        // A send started just before close() cannot be shortened afterwards.
+        let ordinary_timeout = drain - reserve;
         let pending = Arc::new((Mutex::new(Pending::default()), Condvar::new()));
         let state = pending.clone();
         let (tx, done) = mpsc::channel();
@@ -48,7 +50,7 @@ impl Notifier {
             .name("notifier".into())
             .stack_size(256 * 1024)
             .spawn(move || {
-                deliver(&state, send, reserve);
+                deliver(&state, send, reserve, ordinary_timeout);
                 let _ = tx.send(());
             })?;
         Ok(Self {
@@ -112,6 +114,7 @@ fn deliver(
     pending: &(Mutex<Pending>, Condvar),
     send: impl Fn(&str, Instant) -> Result<()>,
     reserve: Duration,
+    ordinary_timeout: Duration,
 ) {
     let (lock, ready) = pending;
     loop {
@@ -141,7 +144,7 @@ fn deliver(
         let (message, deadline, last) = if let Some(text) = state.messages.pop_front() {
             (
                 text,
-                ordinary_deadline.unwrap_or_else(|| Instant::now() + MESSAGE_TIMEOUT),
+                ordinary_deadline.unwrap_or_else(|| Instant::now() + ordinary_timeout),
                 false,
             )
         } else if let Some((deadline, final_message)) = &mut state.closing {
@@ -249,5 +252,35 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(1));
         release.send(()).unwrap();
         exited.recv_timeout(Duration::from_secs(2)).unwrap();
+    }
+    #[test]
+    fn inflight_notification_must_respect_final_reserve() {
+        let (entered_tx, entered) = mpsc::channel();
+        let (release, gate) = mpsc::channel();
+        let notifier = Notifier::start(
+            move |text, deadline| {
+                if text == "inflight" {
+                    entered_tx.send(deadline).unwrap();
+                    gate.recv_timeout(Duration::from_secs(2)).unwrap();
+                }
+                Ok(())
+            },
+            DRAIN_TIMEOUT,
+            FINAL_RESERVE,
+        )
+        .unwrap();
+        notifier.send("inflight".into());
+        let message_deadline = entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        let final_deadline = notifier.close(Some("stop".into()));
+        let cutoff = final_deadline - FINAL_RESERVE;
+        release.send(()).unwrap();
+        notifier.finish(None);
+        assert!(
+            message_deadline <= cutoff,
+            "in-flight ordinary send can consume {}ms of the final notification reserve",
+            message_deadline
+                .saturating_duration_since(cutoff)
+                .as_millis()
+        );
     }
 }
