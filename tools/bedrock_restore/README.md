@@ -24,10 +24,10 @@
 作業用PCまたは隔離した一時環境で使用します。Linuxでソースから依存を構築する場合は、GCC/G++とzlibのヘッダー・リンク用ファイルが必要です。本番のシステムPythonやサービス依存は変更しません。
 
 ```sh
-python3.11 -m venv /private/tmp/bedrock-restore-env
-/private/tmp/bedrock-restore-env/bin/python -m pip install -r tools/bedrock_restore/requirements-build.txt
-/private/tmp/bedrock-restore-env/bin/python -m pip install --no-build-isolation -r tools/bedrock_restore/requirements.txt
-/private/tmp/bedrock-restore-env/bin/python -m unittest tools.bedrock_restore.test_restore -v
+python3.11 -m venv /tmp/bedrock-restore-env
+/tmp/bedrock-restore-env/bin/python -m pip install -r tools/bedrock_restore/requirements-build.txt
+/tmp/bedrock-restore-env/bin/python -m pip install --no-build-isolation -r tools/bedrock_restore/requirements.txt
+/tmp/bedrock-restore-env/bin/python -m unittest tools.bedrock_restore.test_restore -v
 ```
 
 依存バージョンの正本は `constraints.txt` です。CIでは合成したデータだけを使用し、座標境界・複数層・NBTの保持・参照・本人対応・正常停止条件・実際のLevelDBへの候補書き込みを検証します。実ワールドはCIへ送信しません。
