@@ -75,7 +75,7 @@ Linux/root環境では `rehearsal.py` を使用します。ワークスペース
 python -m tools.bedrock_restore.rehearsal WORKSPACE STAGED_BDSCTL EXPECTED_MANAGER_COMMIT
 ```
 
-`/var/lib/bds-prep-*` の使い捨てコピーと専用の一時unitを作成し、検証済み管理バイナリ・現在のBDS・更新BP/RPで起動します。本番データ・設定・状態のパスを不可視にし、PrivateNetworkで通信を分離し、失敗通知unitへの連携を外します。CPUは50%、メモリは2GiBを上限とします。
+`/var/lib/bds-prep-*` の使い捨てコピーと専用の一時unitを作成し、検証済み管理バイナリ・現在のBDS・更新BP/RPで起動します。本番データ・設定・状態のパスを不可視にし、PrivateNetworkで通信を分離し、失敗通知unitへの連携を外します。CPUは50%、メモリは2GiBを上限とします。使い捨てunitに限り開始・停止・実行時間の上限を設け、停止が進まない場合はそのunit内だけを終了させます。
 
 中心と四隅を読み込ませ、ログ・正常終了・フラッグの位置/HP/所属・チーム情報・2人のデータを確認します。ゲーム内での表示・プレイヤー操作・端末ごとのリソース取得は別途確認が必要です。検証後のワールドは使用せず、一時unitと使い捨てコピーを削除します。結果は `rehearsal-report.json` と `isolated-bds.log` に保存します。
 

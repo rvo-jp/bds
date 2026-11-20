@@ -196,7 +196,20 @@ minimum_free_mib=0
         text = "\n".join(
             line for line in text.splitlines() if not line.startswith("OnFailure=")
         )
-        text += "\n[Service]\nPrivateNetwork=yes\nRestart=no\nCPUQuota=50%\nMemoryMax=2G\nIOWeight=10\nNice=19\nInaccessiblePaths=/var/lib/bds /etc/bds /run/bds /var/lib/bds-discord /var/lib/bds-supervisor\n"
+        text += """
+[Service]
+PrivateNetwork=yes
+Restart=no
+CPUQuota=50%
+MemoryMax=2G
+IOWeight=10
+Nice=19
+TimeoutStartSec=210s
+TimeoutStopSec=30s
+RuntimeMaxSec=240s
+SendSIGKILL=yes
+InaccessiblePaths=/var/lib/bds /etc/bds /run/bds /var/lib/bds-discord /var/lib/bds-supervisor
+"""
         unitfile.write_text(text + "\n")
         created_unit = True
         run("systemctl", "daemon-reload")
