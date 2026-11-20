@@ -69,7 +69,7 @@ python -m tools.bedrock_restore WORKSPACE WORKSPACE/restore-plan.json
 
 ## 隔離した起動リハーサル
 
-Linux/root環境では `rehearsal.py` を使用します。ワークスペースには検証済みの候補、計画、baselineの調査結果、ビルド済みアドオンのアーカイブとファイル別ハッシュを用意します。このコマンドは今回の移行準備で使用する配置・JSON形式に対応したものです。
+Linux/root環境では `rehearsal.py` を使用します。ワークスペースには検証済みの候補、計画、ビルド済みアドオンのアーカイブとファイル別ハッシュを用意します。フラッグは毎回その候補から列挙し、過去の調査リストには依存しません。このコマンドは今回の移行準備で使用する配置・JSON形式に対応したものです。
 
 ```sh
 python -m tools.bedrock_restore.rehearsal WORKSPACE STAGED_BDSCTL EXPECTED_MANAGER_COMMIT

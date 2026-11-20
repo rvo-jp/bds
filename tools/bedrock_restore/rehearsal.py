@@ -17,7 +17,7 @@ import uuid
 from pathlib import Path
 
 from . import nbt
-from .database import opened
+from .database import opened, prefix_items
 from .filesystem import workspace_lock
 from .model import guarded_root, read_plan
 
@@ -72,8 +72,6 @@ def rehearse_locked(root, manager, expected_commit):
     if f"({expected_commit})" not in run(manager, "--version").stdout:
         raise ValueError("Manager does not match pinned commit")
     addon = json.loads((root / "addon-build.json").read_text())
-    inspection = json.loads((root / "baseline-inspection.json").read_text())
-    flag_keys = [entry["key"] for entry in inspection["actors"]["flags"]]
     release = json.loads((root / "baseline-snapshot.json").read_text())["release"]
     test = Path("/var/lib") / ("bds-prep-" + uuid.uuid4().hex[:12])
     unit = test.name + ".service"
@@ -214,6 +212,11 @@ InaccessiblePaths=/var/lib/bds /etc/bds /run/bds /var/lib/bds-discord /var/lib/b
         created_unit = True
         run("systemctl", "daemon-reload")
         with opened(world / "db") as db:
+            flag_keys = [
+                key.hex()
+                for key, raw in prefix_items(db, b"actorprefix")
+                if str(nbt.compound(raw).get("identifier")) == "rvo:flag"
+            ]
             before = signatures(db, plan, flag_keys)
         run("systemctl", "start", unit, timeout=240)
         private = run(
