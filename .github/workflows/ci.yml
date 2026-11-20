@@ -23,7 +23,7 @@ jobs:
       - run: cargo +1.96.1 fmt --check
       - run: cargo +1.96.1 clippy --locked --all-targets -- -D warnings
       - run: cargo +1.96.1 test --locked
-      - run: python3 -m unittest discover -s tests -p 'test_distribution.py' -v
+      - run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - run: rustup target add x86_64-unknown-linux-musl --toolchain 1.96.1
       - run: cargo +1.96.1 build --release --locked --target x86_64-unknown-linux-musl --bins --examples
         env:

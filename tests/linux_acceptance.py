@@ -5,6 +5,8 @@ Run as root: python3 tests/linux_acceptance.py BDSCTL FAKE_BDS
 """
 import fcntl,hashlib,json,os,pathlib,pwd,shutil,signal,socket,subprocess,sys,tempfile,time,uuid
 
+from unit_fixture import isolated_unit
+
 def run(*args,ok=True,timeout=90):
     result=subprocess.run([str(a) for a in args],capture_output=True,text=True,timeout=timeout)
     if ok and result.returncode:
@@ -77,7 +79,7 @@ allowed_users = ["3333333333333333333"]
         ctl('generate-units',root/'generated',binary)
         for original,name in [(unit,unit),('bds-discord.service',receiver)]:
             text=(root/'generated'/original).read_text()
-            text='\n'.join(l for l in text.splitlines() if not l.startswith(('RuntimeDirectory','StateDirectory','OnFailure=')))+'\n'
+            text=isolated_unit(text,root)
             if original=='bds-discord.service':text=text.replace('User=bds-discord','User='+user).replace('Group=bds-discord','Group='+user)
             path=pathlib.Path('/run/systemd/system')/name;path.write_text(text);units.append(name)
         run('systemctl','daemon-reload');run('systemd-analyze','verify',*[pathlib.Path('/run/systemd/system')/x for x in units])
@@ -402,7 +404,7 @@ allowed_users = ["3333333333333333333"]
         for name in ['runtime','diagnostics']:os.chown(recovery/name,account.pw_uid,account.pw_gid)
         restoring('generate-units',recovery/'generated',binary)
         text=(recovery/'generated'/restored_unit).read_text()
-        text='\n'.join(l for l in text.splitlines() if not l.startswith(('RuntimeDirectory','StateDirectory','OnFailure=')))+'\n'
+        text=isolated_unit(text,root)
         path=pathlib.Path('/run/systemd/system')/restored_unit;path.write_text(text);units.append(restored_unit)
         run('systemctl','daemon-reload');run('systemctl','start',restored_unit)
         assert json.loads((recovery/'runtime/status.json').read_text())['ready']

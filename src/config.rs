@@ -178,7 +178,10 @@ impl Config {
             (1..=60).contains(&self.server.response_seconds),
             "起動時の応答期限は1〜60秒にしてください"
         );
-        ensure!(self.server.restart_seconds > 0, "復旧設定が不正です");
+        ensure!(
+            (1..=3600).contains(&self.server.restart_seconds),
+            "復旧待ちは1〜3600秒にしてください"
+        );
         ensure!(
             self.maintenance.retention > 0
                 && self.maintenance.extra_retention > 0
@@ -241,7 +244,7 @@ pub fn valid_absolute(p: &Path) -> Result<()> {
     ensure!(
         !p.as_os_str()
             .to_string_lossy()
-            .contains(['\n', '\r', '\0', '%', '"', '\\']),
+            .contains(['\n', '\r', '\0', '%', '"', '\\', ':', '$']),
         "パスに使用できない文字があります"
     );
     #[cfg(target_os = "linux")]
@@ -283,4 +286,33 @@ pub fn port(c: &Config) -> Result<u16> {
         .parse::<u16>()?;
     ensure!(port > 0, "ポートが不正です");
     Ok(port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn restart_delay_cannot_overflow_unit_timeout() {
+        let mut c = Config::default();
+        for value in [0, 3601, u64::MAX] {
+            c.server.restart_seconds = value;
+            assert!(c.validate().is_err(), "invalid restart_seconds: {value}");
+        }
+        for value in [1, 30, 3600] {
+            c.server.restart_seconds = value;
+            c.validate().unwrap();
+            crate::setup::units(
+                &c,
+                Path::new("/usr/local/bin/bdsctl"),
+                Path::new("/etc/bds/config.toml"),
+            )
+            .unwrap();
+        }
+    }
+    #[test]
+    fn paths_cannot_inject_systemd_directory_or_environment_syntax() {
+        for path in ["/run/bds:other", "/var/lib/bds::ro", "/opt/$BDS_DIR"] {
+            assert!(valid_absolute(Path::new(path)).is_err());
+        }
+    }
 }

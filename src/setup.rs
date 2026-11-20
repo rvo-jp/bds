@@ -5,10 +5,36 @@ use std::{collections::BTreeMap, fs, path::Path};
 fn quote(p: &Path) -> String {
     format!("\"{}\"", p.display())
 }
+fn managed_directory(key: &str, base: &Path, path: &Path, mode: u32) -> String {
+    match path.strip_prefix(base) {
+        Ok(relative) if !relative.as_os_str().is_empty() => {
+            format!("{key}={}\n{key}Mode={mode:04o}\n", quote(relative))
+        }
+        _ => String::new(),
+    }
+}
 pub fn units(c: &Config, binary: &Path, config: &Path) -> Result<BTreeMap<String, String>> {
     crate::config::valid_absolute(binary)?;
     crate::config::valid_absolute(config)?;
     let exec = format!("{} --config {}", quote(binary), quote(config));
+    let runtime_directory = managed_directory(
+        "RuntimeDirectory",
+        Path::new("/run"),
+        &c.paths.runtime,
+        0o750,
+    );
+    let diagnostic_directory = managed_directory(
+        "StateDirectory",
+        Path::new("/var/lib"),
+        &c.paths.diagnostics,
+        0o700,
+    );
+    let discord_directory = managed_directory(
+        "StateDirectory",
+        Path::new("/var/lib"),
+        &c.paths.discord_state,
+        0o700,
+    );
     let mut out = BTreeMap::new();
     let startup =
         c.server.port_wait_seconds + c.server.startup_seconds + c.server.stable_seconds + 15;
@@ -38,12 +64,8 @@ TimeoutStartSec=infinity
 TimeoutStopSec=infinity
 KillMode=mixed
 SendSIGKILL=no
-RuntimeDirectory=bds
-RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=yes
-StateDirectory=bds-supervisor
-StateDirectoryMode=0700
-UMask=0027
+{runtime_directory}RuntimeDirectoryPreserve=yes
+{diagnostic_directory}UMask=0027
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -138,9 +160,7 @@ ExecStart={exec} discord
 Restart=on-failure
 RestartSec=10
 TimeoutStartSec=30
-StateDirectory=bds-discord
-StateDirectoryMode=0700
-UMask=0077
+{discord_directory}UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -263,4 +283,41 @@ pub fn directories(c: &Config) -> Result<()> {
         "rsyncが必要です"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn custom_layout_cannot_claim_default_state_directories() {
+        let mut c = Config::default();
+        c.server.user = "bds-audit".into();
+        c.server.unit = "bds-audit.service".into();
+        c.paths.runtime = "/run/bds-audit".into();
+        c.paths.diagnostics = "/var/lib/bds-audit-diagnostics".into();
+        c.validate().unwrap();
+        let generated = units(
+            &c,
+            Path::new("/usr/local/bin/bdsctl"),
+            Path::new("/etc/bds/config.toml"),
+        )
+        .unwrap();
+        let service = &generated[&c.server.unit];
+        assert!(service.contains("\nRuntimeDirectory=\"bds-audit\"\n"));
+        assert!(service.contains("\nStateDirectory=\"bds-audit-diagnostics\"\n"));
+        assert!(!service.contains("\nRuntimeDirectory=\"bds\"\n"));
+        assert!(!service.contains("\nStateDirectory=\"bds-supervisor\"\n"));
+        c.paths.runtime = "/srv/bds-test-runtime".into();
+        c.paths.diagnostics = "/srv/bds-test-diagnostics".into();
+        c.paths.discord_state = "/srv/bds-test-discord".into();
+        let generated = units(
+            &c,
+            Path::new("/usr/local/bin/bdsctl"),
+            Path::new("/etc/bds/config.toml"),
+        )
+        .unwrap();
+        assert!(!generated[&c.server.unit].contains("\nRuntimeDirectory="));
+        assert!(!generated[&c.server.unit].contains("\nStateDirectory="));
+        assert!(!generated["bds-discord.service"].contains("\nStateDirectory="));
+    }
 }

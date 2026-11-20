@@ -8,6 +8,8 @@ import hashlib,json,os,pathlib,pwd,shutil,subprocess,sys,tempfile,time,uuid,zipf
 VERSION='1.26.63.1'
 ZIP_SHA256='b40b04c8f5a7c42a19ee685c22fc593e66116b9c22741b8c75489306b252ff62'
 
+from unit_fixture import isolated_unit
+
 def run(*args,ok=True,timeout=120):
     p=subprocess.run([str(x) for x in args],capture_output=True,text=True,timeout=timeout)
     if ok and p.returncode:raise AssertionError(f'{args}: {p.stdout}\n{p.stderr}')
@@ -57,7 +59,7 @@ minimum_free_mib=0
         def ctl(*args):return run(binary,'--config',config,*args)
         ctl('generate-units',root/'units',binary)
         text=(root/'units'/unit).read_text()
-        text='\n'.join(l for l in text.splitlines() if not l.startswith(('RuntimeDirectory','StateDirectory','OnFailure=')))+'\n'
+        text=isolated_unit(text,root)
         # Keep the same private namespace across restarts: recreating it would
         # erase TIME_WAIT and hide the production restart failure.
         text=text.replace('[Service]',f'[Service]\nNetworkNamespacePath=/run/netns/{user}')
