@@ -1,7 +1,7 @@
 //! Typed records under the root-owned state directory.
 //! A record owns its filename, permissions and durable replacement/removal policy.
 use crate::{config::Config, util};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fs, marker::PhantomData, path::PathBuf};
 
@@ -36,6 +36,15 @@ impl<T> Record<T> {
 impl<T: DeserializeOwned> Record<T> {
     pub(crate) fn load(&self, c: &Config) -> Result<T> {
         util::read_json(&self.path(c))
+    }
+    pub(crate) fn optional(&self, c: &Config) -> Result<Option<T>> {
+        let path = self.path(c);
+        let result: Result<Option<T>> = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(Into::into),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        };
+        result.with_context(|| format!("状態記録を読み込めません: {}", path.display()))
     }
 }
 impl<T: Serialize> Record<T> {

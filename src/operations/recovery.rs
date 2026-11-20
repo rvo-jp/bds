@@ -68,6 +68,7 @@ fn recover_without_bds(c: &Config) -> Result<()> {
 }
 
 fn cleanup_staging(c: &Config) -> Result<()> {
+    releases::cleanup_downloads(c)?;
     for (root, prefixes) in [
         (
             c.paths.store.clone(),
@@ -156,4 +157,55 @@ fn own_working(c: &Config, id: &str) -> Result<()> {
         ],
     )?;
     util::chmod(&releases::working(c, id), 0o700)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn recovery_cleans_orphan_download_staging() {
+        let root =
+            std::env::temp_dir().join(format!("bds-audit-staging-{}", util::nonce().unwrap()));
+        let _cleanup = util::CleanupDir(root.clone());
+        let mut c = Config::default();
+        c.paths.store = root.join("store");
+        c.paths.releases = root.join("releases");
+        fs::create_dir_all(&c.paths.store).unwrap();
+        fs::create_dir_all(&c.paths.releases).unwrap();
+        let zip = c
+            .paths
+            .releases
+            .join(".download-0123456789abcdef0123456789abcdef.zip");
+        let dir = c
+            .paths
+            .releases
+            .join(".release-0123456789abcdef0123456789abcdef");
+        fs::write(&zip, "partial").unwrap();
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("partial"), "unfinished extraction").unwrap();
+        let published = c.paths.releases.join("1.2.3.4");
+        fs::create_dir(&published).unwrap();
+        fs::write(published.join("bedrock_server"), "published").unwrap();
+        let unrelated = c.paths.releases.join(".download-notes.zip");
+        fs::write(&unrelated, "administrator notes").unwrap();
+        cleanup_staging(&c).unwrap();
+        assert!(
+            !zip.exists() && !dir.exists(),
+            "orphan archive/extraction remains after recovery"
+        );
+        assert_eq!(
+            fs::read_to_string(&unrelated).unwrap(),
+            "administrator notes"
+        );
+        assert_eq!(
+            fs::read_to_string(published.join("bedrock_server")).unwrap(),
+            "published"
+        );
+        let external = root.join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("keep"), "safe").unwrap();
+        std::os::unix::fs::symlink(&external, &dir).unwrap();
+        assert!(cleanup_staging(&c).is_err());
+        assert_eq!(fs::read_to_string(external.join("keep")).unwrap(), "safe");
+    }
 }

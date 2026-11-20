@@ -181,6 +181,7 @@ pub fn download(c: &Config, id: &str, url: &str) -> Result<Release> {
     ensure!(version_url(url)? == id, "版とURLが一致しません");
     fs::create_dir_all(&c.paths.releases)?;
     util::chmod(&c.paths.releases, 0o755)?;
+    cleanup_downloads(c)?;
     let target = c.paths.releases.join(id);
     if target.is_dir() {
         let r: Release = util::read_json(&target.join("release.json"))?;
@@ -230,6 +231,58 @@ pub fn download(c: &Config, id: &str, url: &str) -> Result<Release> {
         let _ = fs::remove_dir_all(stage);
     }
     result
+}
+/// Call only while holding the operation lock; download/extraction has no
+/// orphaned worker that could still be using these unpublished paths.
+pub(crate) fn cleanup_downloads(c: &Config) -> Result<()> {
+    let entries = match fs::read_dir(&c.paths.releases) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let (nonce, directory) = if let Some(nonce) = name
+            .strip_prefix(".download-")
+            .and_then(|name| name.strip_suffix(".zip"))
+        {
+            (nonce, false)
+        } else if let Some(nonce) = name.strip_prefix(".release-") {
+            (nonce, true)
+        } else {
+            continue;
+        };
+        if nonce.len() != 32
+            || !nonce
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            continue;
+        }
+        let kind = entry.file_type()?;
+        ensure!(
+            if directory {
+                kind.is_dir()
+            } else {
+                kind.is_file()
+            },
+            "配布物の一時領域が不正です: {}",
+            entry.path().display()
+        );
+        if directory {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+        removed = true;
+    }
+    if removed {
+        fs::File::open(&c.paths.releases)?.sync_all()?;
+    }
+    Ok(())
 }
 /// A writable execution copy is disposable; data() remains the sole backup source.
 pub fn working(c: &Config, id: &str) -> PathBuf {

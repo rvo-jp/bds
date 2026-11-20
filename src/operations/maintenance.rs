@@ -39,7 +39,7 @@ pub fn check(c: &Config) -> Result<Option<releases::Release>> {
 }
 
 fn check_release(c: &Config, id: &str, url: &str) -> Result<Option<releases::Release>> {
-    if REJECTED_RELEASE.load(c).is_ok_and(|r| r.id == id) {
+    if REJECTED_RELEASE.optional(c)?.is_some_and(|r| r.id == id) {
         return Ok(None);
     }
     if !releases::newer(id, &releases::current(c)?)? {
@@ -81,7 +81,8 @@ pub fn auto_update_with(
 
 fn maintenance_preflight(c: &Config) -> Result<()> {
     crate::admin::ensure_available(c)?;
-    super::state::ensure_ready(c)
+    super::state::ensure_ready(c)?;
+    releases::cleanup_downloads(c)
 }
 
 pub fn maintenance(c: &Config, request: MaintenanceRequest) -> Result<snapshots::Snapshot> {
@@ -265,4 +266,47 @@ pub fn daily(c: &Config) -> Result<Option<snapshots::Snapshot>> {
     }
     maintenance_preflight(c)?;
     maintenance_locked(c, None, snapshots::Reason::Daily).map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{fs, os::unix::fs::symlink};
+    #[test]
+    fn corrupt_rejected_release_must_stop_update() {
+        let root =
+            std::env::temp_dir().join(format!("bds-audit-rejected-{}", util::nonce().unwrap()));
+        let _cleanup = util::CleanupDir(root.clone());
+        let mut c = Config::default();
+        c.paths.store = root.join("store");
+        c.paths.releases = root.join("releases");
+        fs::create_dir_all(c.state()).unwrap();
+        fs::create_dir_all(c.paths.releases.join("1.2.3.4")).unwrap();
+        fs::create_dir_all(c.paths.releases.join("1.2.3.5")).unwrap();
+        symlink("1.2.3.4", c.current()).unwrap();
+        let url = releases::download_url("1.2.3.5");
+        util::json(
+            &c.paths.releases.join("1.2.3.5/release.json"),
+            &releases::Release {
+                id: "1.2.3.5".into(),
+                url: url.clone(),
+                sha256: "fixture".into(),
+            },
+            0o644,
+        )
+        .unwrap();
+        fs::write(REJECTED_RELEASE.path(&c), "broken-json").unwrap();
+        let result = check_release(&c, "1.2.3.5", &url);
+        assert!(
+            result.is_err(),
+            "corrupted rejection record was ignored; update candidate returned: {result:?}"
+        );
+        fs::remove_file(REJECTED_RELEASE.path(&c)).unwrap();
+        let candidate = check_release(&c, "1.2.3.5", &url).unwrap().unwrap();
+        REJECTED_RELEASE.save(&c, &candidate).unwrap();
+        assert!(check_release(&c, "1.2.3.5", &url).unwrap().is_none());
+        fs::remove_file(REJECTED_RELEASE.path(&c)).unwrap();
+        fs::create_dir(REJECTED_RELEASE.path(&c)).unwrap();
+        assert!(check_release(&c, "1.2.3.5", &url).is_err());
+    }
 }
