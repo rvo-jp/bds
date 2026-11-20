@@ -13,7 +13,7 @@ import amulet_nbt as n
 from . import nbt, palettes, shared, validation
 from .database import get, opened, prefix_items
 from .entities import plan_actors
-from .filesystem import sync_tree, workspace_lock
+from .filesystem import save_json, sync_tree, workspace_lock
 from .model import (
     Region,
     chunk_key,
@@ -359,8 +359,7 @@ def build_locked(root, plan_path):
         "status": "offline-verified; isolated BDS rehearsal still required",
     }
     report_path = root / "restore-report.json"
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2))
-    report_path.chmod(0o600)
+    save_json(report_path, report)
     print(
         json.dumps(
             {k: v for k, v in report.items() if k not in ("changes", "plan")},

@@ -7,13 +7,15 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import amulet_nbt as n
 import numpy as np
 
-from tools.bedrock_restore import nbt, palettes, shared
+from tools.bedrock_restore import nbt, palettes, rehearsal, shared
 from tools.bedrock_restore.entities import plan_actors, registry
-from tools.bedrock_restore.filesystem import workspace_lock
+from tools.bedrock_restore.filesystem import save_json, workspace_lock
 from tools.bedrock_restore.model import (
     Region,
     chunk_prefix,
@@ -79,6 +81,44 @@ def actor(db, ident, x, z, kind="minecraft:cow", dimension=0, links=()):
 
 
 class Boundaries(unittest.TestCase):
+    def test_failed_rehearsal_cannot_leave_an_old_success(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            for label in ["source", "baseline"]:
+                (root / (label + "-verified.json")).write_text("{}")
+            outcome = root / "rehearsal-report.json"
+            for error in [ValueError("validation failed"), KeyboardInterrupt()]:
+                save_json(outcome, {"status": "passed"})
+
+                def fail(*args):
+                    self.assertEqual(
+                        "running", json.loads(outcome.read_text())["status"]
+                    )
+                    raise error
+
+                with (
+                    patch.object(rehearsal.os, "geteuid", return_value=0),
+                    patch.object(
+                        rehearsal.os,
+                        "uname",
+                        return_value=SimpleNamespace(sysname="Linux"),
+                    ),
+                    patch.object(rehearsal, "rehearse_locked", side_effect=fail),
+                ):
+                    with self.assertRaises(type(error)):
+                        rehearsal.rehearse(root, "unused", "commit")
+                self.assertEqual("failed", json.loads(outcome.read_text())["status"])
+
+    def test_atomic_json_does_not_replace_a_report_with_partial_serialization(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            report = root / "report.json"
+            save_json(report, {"status": "old"})
+            with self.assertRaises(TypeError):
+                save_json(report, {"bad": set()})
+            self.assertEqual({"status": "old"}, json.loads(report.read_text()))
+            self.assertEqual(["report.json"], [p.name for p in root.iterdir()])
+
     def test_workspace_excludes_simultaneous_build_or_rehearsal(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

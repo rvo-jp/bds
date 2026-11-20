@@ -2,8 +2,31 @@
 
 import fcntl
 import hashlib
+import json
 import os
+import tempfile
 from contextlib import contextmanager
+
+
+def save_json(path, value):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, prefix="." + path.name + ".", delete=False
+        ) as handle:
+            temporary = handle.name
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    finally:
+        if temporary is not None and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def file_hash(path):

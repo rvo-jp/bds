@@ -18,7 +18,7 @@ from pathlib import Path
 
 from . import nbt
 from .database import opened, prefix_items
-from .filesystem import workspace_lock
+from .filesystem import file_hash, save_json, workspace_lock
 from .model import guarded_root, read_plan
 
 
@@ -60,7 +60,25 @@ def rehearse(workspace, manager, expected_commit):
         raise ValueError("Root on Linux required")
     root = guarded_root(workspace)
     with workspace_lock(root):
-        return rehearse_locked(root, manager, expected_commit)
+        started = time.monotonic()
+        outcome = root / "rehearsal-report.json"
+        save_json(outcome, {"status": "running", "manager_commit": expected_commit})
+        try:
+            result = rehearse_locked(root, manager, expected_commit)
+        except BaseException as error:
+            save_json(
+                outcome,
+                {
+                    "status": "failed",
+                    "manager_commit": expected_commit,
+                    "error": type(error).__name__ + ": " + str(error),
+                },
+            )
+            raise
+        result["seconds"] = round(time.monotonic() - started, 2)
+        save_json(outcome, result)
+        print(json.dumps(result), flush=True)
+        return result
 
 
 def rehearse_locked(root, manager, expected_commit):
@@ -77,7 +95,6 @@ def rehearse_locked(root, manager, expected_commit):
     unit = test.name + ".service"
     unitfile = Path("/run/systemd/system") / unit
     account = pwd.getpwnam("bds")
-    started = time.monotonic()
     created_unit = False
     result = {
         "manager_commit": expected_commit,
@@ -85,6 +102,8 @@ def rehearse_locked(root, manager, expected_commit):
         "bds_release": release,
         "network": "private",
         "production_paths": "inaccessible",
+        "restore_report_sha256": file_hash(root / "restore-report.json"),
+        "plan_sha256": report["plan_sha256"],
     }
     test.mkdir(mode=0o750)
     os.chown(test, 0, account.pw_gid)
@@ -284,11 +303,8 @@ InaccessiblePaths=/var/lib/bds /etc/bds /run/bds /var/lib/bds-discord /var/lib/b
                 "regions_loaded": coordinates,
                 "flags_preserved": len(flag_keys),
                 "players_preserved": len(plan["players"]),
-                "seconds": round(time.monotonic() - started, 2),
             }
         )
-        (root / "rehearsal-report.json").write_text(json.dumps(result, indent=2))
-        print(json.dumps(result), flush=True)
         return result
     finally:
         if created_unit:
