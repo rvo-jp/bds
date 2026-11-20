@@ -230,9 +230,10 @@ minimum_free_mib=0
         ctl("console", "tickingarea list")
         time.sleep(15)
         run("systemctl", "stop", unit, timeout=180)
-        result["memory_peak_bytes"] = int(
-            run("systemctl", "show", unit, "-p", "MemoryPeak", "--value").stdout.strip()
-        )
+        peak = run(
+            "systemctl", "show", unit, "-p", "MemoryPeak", "--value"
+        ).stdout.strip()
+        result["memory_peak_bytes"] = int(peak) if peak.isdigit() else None
         logs = run("journalctl", "-u", unit, "--no-pager", "-o", "cat").stdout
         (root / "isolated-bds.log").write_text(logs)
         if "Server started." not in logs:
