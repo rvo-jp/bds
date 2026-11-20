@@ -22,10 +22,12 @@ def validate_stop(mode, status, boot, services):
     if mode.get("phase") != "ready":
         raise ValueError("Ready manual-maintenance guard required")
     if (
-        not status.get("stopped")
-        or status.get("failed")
+        status.get("stopped") is not True
+        or status.get("failed") is not False
+        or type(status.get("child_exit")) is not int
         or status.get("child_exit") != 0
         or status.get("boot") != boot
+        or not isinstance(status.get("invocation"), str)
         or not status.get("invocation")
     ):
         raise ValueError("Clean save/exit from this boot required")

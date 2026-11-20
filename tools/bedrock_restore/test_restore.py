@@ -133,6 +133,9 @@ class Boundaries(unittest.TestCase):
             {"stopped": False},
             {"failed": True},
             {"child_exit": -9},
+            {"child_exit": False},
+            {"failed": None},
+            {"stopped": "yes"},
             {"boot": "previous-boot"},
         ]:
             with self.assertRaises(ValueError):
