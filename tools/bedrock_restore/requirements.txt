@@ -1,0 +1,5 @@
+-c constraints.txt
+amulet-leveldb
+amulet-nbt
+numpy
+mutf8

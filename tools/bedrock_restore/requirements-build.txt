@@ -1,0 +1,6 @@
+-c constraints.txt
+Cython
+setuptools
+wheel
+versioneer
+numpy
