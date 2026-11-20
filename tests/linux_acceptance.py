@@ -183,7 +183,8 @@ allowed_users = ["3333333333333333333"]
         assert links==release_links() and status()['invocation']==invocation and (data/'worlds/commands.log').read_bytes()==commands
         check('manual and startup-only recovery refuse live BDS without replacing its links')
         # Both resident Rust processes, excluding the fake Minecraft child.
-        pids=[int(run('systemctl','show',u,'-p','MainPID','--value').stdout) for u in units]
+        pids=[int(run('systemctl','show',u,'-p','MainPID','--value').stdout) for u in (unit,receiver)]
+        assert all(pid>0 for pid in pids),('resident process missing',pids)
         def cpu_ticks(pid):return sum(map(int,pathlib.Path(f'/proc/{pid}/stat').read_text().rsplit(')',1)[1].split()[11:13]))
         status_file=root/'runtime/status.json';state_before=status_file.read_bytes();mtime_before=status_file.stat().st_mtime_ns
         commands_before=(data/'worlds/commands.log').read_bytes()
