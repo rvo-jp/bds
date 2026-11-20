@@ -36,7 +36,8 @@ done
 fi
 [ -f /etc/bds/config.toml ] || { echo '/etc/bds/config.tomlを先に用意してください' >&2; exit 1; }
 staging=$(mktemp -d)
-trap 'rm -rf "$staging"' EXIT HUP INT TERM
+trap 'rm -rf "$staging"' EXIT
+trap 'exit 130' HUP INT TERM
 "$artifact_dir/bdsctl" generate-units "$staging" /usr/local/bin/bdsctl
 # Never follow an existing mask/link when installing or saving the previous files.
 files="/usr/local/bin/bdsctl /usr/local/share/bdsctl/BUILD.json /etc/polkit-1/rules.d/50-bds-discord.rules /etc/systemd/system/bds-update-check.timer /etc/systemd/system/bds-update-check.service"

@@ -97,6 +97,19 @@ esac''')
         self.assertEqual(binary.read_text(),'previous binary');self.assertEqual(unit.read_text(),'previous service')
         self.assertEqual(build.read_text(),'previous build')
         self.assertFalse((pathlib.Path(mapping['/etc/systemd/system'])/'bds-daily.timer').exists())
+    def test_signal_during_previous_file_copy_preserves_installed_files(self):
+        installer,binary,unit,build,mapping=self.installer_fixture()
+        flag=self.root/'signalled'
+        self.make(self.bin/'cp',f'''/bin/cp "$@" || exit $?
+if [ ! -e "{flag}" ]; then
+    touch "{flag}"
+    kill -HUP "$PPID"
+fi''')
+        result=subprocess.run(['sh',str(installer),str(self.bundle),COMMIT],capture_output=True,text=True,timeout=15,env={**os.environ,'PATH':str(self.bin)+':'+os.environ['PATH']})
+        self.assertNotEqual(result.returncode,0)
+        self.assertEqual(binary.read_text(),'previous binary')
+        self.assertEqual(unit.read_text(),'previous service')
+        self.assertEqual(build.read_text(),'previous build')
     def test_routine_upgrade_preserves_stopped_services_and_holds_guard_on_install_failure(self):
         for failure in [False,True]:
             with self.subTest(failure=failure):
