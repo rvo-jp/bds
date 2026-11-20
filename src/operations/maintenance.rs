@@ -64,6 +64,7 @@ pub fn auto_update_with(
         return Ok(None);
     }
     maintenance_preflight(c)?;
+    releases::cleanup_downloads(c)?;
     let (id, url) = latest()?;
     let Some(candidate) = check_release(c, &id, &url)? else {
         return Ok(None);
@@ -81,8 +82,7 @@ pub fn auto_update_with(
 
 fn maintenance_preflight(c: &Config) -> Result<()> {
     crate::admin::ensure_available(c)?;
-    super::state::ensure_ready(c)?;
-    releases::cleanup_downloads(c)
+    super::state::ensure_ready(c)
 }
 
 pub fn maintenance(c: &Config, request: MaintenanceRequest) -> Result<snapshots::Snapshot> {
@@ -308,5 +308,26 @@ mod tests {
         fs::remove_file(REJECTED_RELEASE.path(&c)).unwrap();
         fs::create_dir(REJECTED_RELEASE.path(&c)).unwrap();
         assert!(check_release(&c, "1.2.3.5", &url).is_err());
+    }
+    #[test]
+    fn backup_preflight_does_not_depend_on_download_cleanup() {
+        let root =
+            std::env::temp_dir().join(format!("bds-staging-preflight-{}", util::nonce().unwrap()));
+        let _cleanup = util::CleanupDir(root.clone());
+        let mut c = Config::default();
+        c.paths.store = root.join("store");
+        c.paths.releases = root.join("releases");
+        fs::create_dir_all(&c.paths.releases).unwrap();
+        let outside = root.join("outside");
+        fs::create_dir(&outside).unwrap();
+        symlink(
+            &outside,
+            c.paths
+                .releases
+                .join(".release-0123456789abcdef0123456789abcdef"),
+        )
+        .unwrap();
+        assert!(releases::cleanup_downloads(&c).is_err());
+        maintenance_preflight(&c).unwrap();
     }
 }
