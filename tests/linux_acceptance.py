@@ -21,8 +21,10 @@ def main():
     assert os.geteuid()==0 and sys.platform=='linux'
     source=pathlib.Path(sys.argv[1]).resolve();fake=pathlib.Path(sys.argv[2]).resolve();updater=fake.with_name("auto_update");initializer=fake.with_name("initialize")
     token=uuid.uuid4().hex[:8];user='bds-test-'+token;unit='bds-smoke-'+token+'.service';receiver='bds-smoke-discord-'+token+'.service'
-    root=pathlib.Path(tempfile.mkdtemp(prefix='bdsctl-smoke-',dir='/run'));root.chmod(0o755)
-    units=[];created=False;binary=root/'bdsctl';shutil.copy2(source,binary)
+    # /run may be mounted noexec. Keep executable copies on the same kind of
+    # persistent storage as production; test runtime creation separately.
+    root=pathlib.Path(tempfile.mkdtemp(prefix='bdsctl-smoke-',dir='/var/lib'));root.chmod(0o755)
+    units=[];created=False;runtime_probe=None;binary=root/'bdsctl';shutil.copy2(source,binary)
     report={'checks':[]}
     def check(label):report['checks'].append(label);print('PASS',label,flush=True)
     def ctl(*args,ok=True):return run(binary,'--config',root/'config.toml',*args,ok=ok)
@@ -75,6 +77,21 @@ public_key = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
 guild_id = "2222222222222222222"
 allowed_users = ["3333333333333333333"]
 ''')
+        runtime_probe=pathlib.Path(tempfile.mkdtemp(prefix='bdsctl-runtime-',dir='/run'));runtime_probe.chmod(0o755)
+        diagnostics=runtime_probe/'diagnostics';diagnostics.mkdir();os.chown(diagnostics,account.pw_uid,account.pw_gid)
+        runtime_unit='bds-runtime-'+token+'.service'
+        runtime_config=root/'runtime-config.toml'
+        text=(root/'config.toml').read_text().replace(f'runtime = "{root}/runtime"',f'runtime = "{runtime_probe}/runtime"').replace(f'diagnostics = "{root}/diagnostics"',f'diagnostics = "{diagnostics}"').replace(f'unit = "{unit}"',f'unit = "{runtime_unit}"')
+        runtime_config.write_text(text)
+        run(binary,'--config',runtime_config,'generate-units',root/'runtime-generated',binary)
+        text=isolated_unit((root/'runtime-generated'/runtime_unit).read_text(),runtime_probe)
+        text='\n'.join(line for line in text.splitlines() if not line.startswith('ExecStartPre='))+'\n'
+        text=text.replace('Type=notify','Type=oneshot')
+        text='\n'.join(f'ExecStart=/usr/bin/test -O "{runtime_probe}/runtime"' if line.startswith('ExecStart=') else line for line in text.splitlines())+'\n'
+        path=pathlib.Path('/run/systemd/system')/runtime_unit;path.write_text(text);units.append(runtime_unit)
+        run('systemctl','daemon-reload');run('systemctl','start',runtime_unit)
+        assert (runtime_probe/'runtime').stat().st_uid==account.pw_uid
+        check('configured RuntimeDirectory is created and owned inside the private runtime fixture')
         ctl('recover');run('chown','-R',user+':'+user,data)
         ctl('generate-units',root/'generated',binary)
         for original,name in [(unit,unit),('bds-discord.service',receiver)]:
@@ -544,5 +561,6 @@ allowed_users = ["3333333333333333333"]
             run('systemctl','stop',name,ok=False);run('systemctl','reset-failed',name,ok=False);(pathlib.Path('/run/systemd/system')/name).unlink(missing_ok=True)
         run('systemctl','daemon-reload',ok=False)
         if created:run('userdel',user,ok=False)
+        if runtime_probe is not None:shutil.rmtree(runtime_probe)
         shutil.rmtree(root)
 if __name__=='__main__':main()
