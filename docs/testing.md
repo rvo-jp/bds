@@ -8,7 +8,7 @@ VPSのファイアウォールとIP履歴は管理プログラムと独立して
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
-python3 -m unittest discover -s tests -p 'test_distribution.py' -v
+python3 -m unittest discover -s tests -p 'test_*.py' -v
 cargo build --release --locked --bins --examples
 sudo python3 tests/linux_acceptance.py target/release/bdsctl target/release/examples/fake_bds
 ```
@@ -46,3 +46,7 @@ sudo python3 tests/linux_acceptance.py target/release/bdsctl target/release/exam
 起動準備の試験では別のTCP待受による占有、終了待ちの期限切れ、待機中のSIGTERMによる取消を確認し、BDSが起動されず終了コード78では自動再試行されないこと、ワールドのコマンド記録が変わらないことを検証します。取消はBDSの正常保存を示す終了コードを生成せず、通常バックアップの根拠にもなりません。公式BDS試験では名前付きの隔離ネットワークを再起動後も維持し、HTTP接続でTIME_WAITを作って正常停止します。起動準備中の取消と、その後の残留状態の解消待ちから一度のBDS起動で受付可能になることを確認します。BDS起動確認は30秒、準備待ちは既定90秒で別々に扱います。この試験にはiproute2のip・ssを使い、本番のネットワーク・サービス・ワールドは使いません。
 
 更新候補は、実行前の起動準備失敗と実行後の管理側の観測失敗の両方で、元のサービスへ復帰し候補を保持することを確認します。同じ候補で実際の待受なし・コンソール応答なしが起きた場合は、切り戻し後に再試行禁止になることも検証します。
+
+配布の回帰試験では、旧ファイルの退避中にHUPを送っても処理が再開せず、旧バイナリ・サービス定義・ビルド情報が維持されることを確認します。更新の失敗版記録は不在・正常・破損・読込不能を区別し、取得途中の残骸の回収が確定版・無関係なファイル・リンク先へ影響しないことを検証します。停止通知の試験では、終了要求前から送信中の通知の期限も、最後の通知の予約時間を侵食しないことを確認します。
+
+Linux隔離試験は`RuntimeDirectory`・`StateDirectory`を一時領域内と検証してから実際の定義を使用します。既定の本番パスなどへ所有権変更が及ぶ定義は、サービスを設置する前に拒否します。この保護はPythonの最適化に依存しません。
